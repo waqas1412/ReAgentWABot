@@ -36,6 +36,15 @@ class User extends BaseModel {
   }
 
   /**
+   * Find user by phone (alias for findByPhoneNumber for compatibility)
+   * @param {string} phoneNumber - Phone number (with or without whatsapp: prefix)
+   * @returns {Object|null} - User record
+   */
+  async findByPhone(phoneNumber) {
+    return await this.findByPhoneNumber(phoneNumber);
+  }
+
+  /**
    * Get user with role information
    * @param {string} userId - User ID
    * @returns {Object|null} - User with role data

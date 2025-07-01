@@ -1,6 +1,7 @@
 const { MessagingResponse } = require('twilio').twiml;
 const twilioService = require('../services/twilioService');
 const databaseService = require('../services/databaseService');
+const conversationService = require('../services/conversationService');
 
 class WhatsAppController {
   /**
@@ -193,12 +194,7 @@ class WhatsAppController {
     const { body, from, numMedia, mediaUrl, mediaContentType, profileName } = messageData;
     
     try {
-      // Get or create user in database
-      const user = await databaseService.getOrCreateUserFromWhatsApp(from, profileName);
-      console.log(`Processing message for user: ${user.name || user.phone_number} (Role: ${user.user_roles?.role})`);
-
-      // Convert to lowercase for easier processing
-      const message = body?.toLowerCase().trim() || '';
+      console.log(`Processing message from ${from} (${profileName}): ${body}`);
 
       // Handle media messages
       if (numMedia > 0) {
@@ -209,57 +205,36 @@ class WhatsAppController {
         };
       }
 
-      // Handle different types of messages
-      if (message.includes('help') || message === 'menu' || message === 'start') {
-        return this.getHelpMessage(user);
-      }
-
-      if (message.includes('search') || message.includes('property') || message.includes('properties')) {
-        return await this.handlePropertySearch(user, message);
-      }
-
-      if (message.includes('preferences') || message.includes('preference')) {
-        return this.getPreferencesMessage(user);
-      }
-
-      if (message.includes('appointment') || message.includes('viewing') || message.includes('schedule')) {
-        return await this.handleAppointmentRequest(user, message);
-      }
-
-      if (message.includes('my appointments') || message === 'appointments') {
-        return await this.getUserAppointments(user);
-      }
-
-      if (message.includes('profile') || message.includes('account')) {
-        return this.getProfileMessage(user);
-      }
-
-      // Handle join messages for sandbox
-      if (message.startsWith('join')) {
+      // Handle empty messages
+      if (!body || !body.trim()) {
         return {
           type: 'text',
-          content: `Welcome to ReAgentBot, ${user.name || 'there'}! 🏠\n\nI'm your AI real estate assistant. I can help you:\n• Find properties\n• Schedule viewings\n• Set preferences\n• Manage appointments\n\nSend "help" to see all commands or "search" to find properties!`
+          content: 'Hello! I\'m your AI real estate assistant. Send me a message and I\'ll help you with properties!'
         };
       }
 
-      // Handle budget/price queries
-      if (message.includes('budget') || message.includes('price') || message.includes('$')) {
-        return await this.handleBudgetQuery(user, message);
+      // Handle sandbox join messages
+      const message = body.toLowerCase().trim();
+      if (message.startsWith('join')) {
+        return {
+          type: 'text',
+          content: `Welcome to ReAgentBot! 🏠\n\nI'm your AI real estate assistant. I can help you:\n• Find properties to buy or rent\n• List your property\n• Schedule viewings\n• And much more!\n\nJust tell me what you're looking for!`
+        };
       }
 
-      // Handle location queries
-      if (message.includes('location') || message.includes('area') || message.includes('district')) {
-        return await this.handleLocationQuery(user, message);
-      }
-
-      // Default intelligent response
-      return await this.getIntelligentResponse(user, body);
+      // Use the intelligent conversation service to process the message
+      const responseText = await conversationService.processMessage(from, body);
+      
+      return {
+        type: 'text',
+        content: responseText
+      };
 
     } catch (error) {
       console.error('Error processing message:', error);
       return {
         type: 'text',
-        content: 'Sorry, I encountered an error processing your message. Please try again or send "help" for assistance.'
+        content: 'Sorry, I encountered an error processing your message. Please try again.'
       };
     }
   }

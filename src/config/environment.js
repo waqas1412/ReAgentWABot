@@ -28,12 +28,17 @@ const config = {
     url: process.env.SUPABASE_URL,
     anonKey: process.env.SUPABASE_KEY,
     serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY
+  },
+  
+  // OpenAI Configuration
+  openai: {
+    apiKey: process.env.OPENAI_API_KEY
   }
 };
 
 // Validate required environment variables
 const validateConfig = () => {
-  const required = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'SUPABASE_URL', 'SUPABASE_KEY', 'SUPABASE_SERVICE_ROLE_KEY'];
+  const required = ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'SUPABASE_URL', 'SUPABASE_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
   const missing = required.filter(key => !process.env[key]);
   
   if (missing.length > 0) {
@@ -44,6 +49,7 @@ const validateConfig = () => {
     console.error('SUPABASE_URL=your_supabase_url');
     console.error('SUPABASE_KEY=your_supabase_anon_key');
     console.error('SUPABASE_SERVICE_ROLE_KEY=your_service_role_key');
+    console.error('OPENAI_API_KEY=your_openai_api_key');
     console.error('TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886');
     console.error('SANDBOX_KEYWORD=your_sandbox_keyword');
     console.error('LOCAL_TUNNEL_SUBDOMAIN=your-fixed-subdomain');
