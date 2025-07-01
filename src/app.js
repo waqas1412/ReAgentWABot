@@ -13,13 +13,30 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 
 // Import config
 const { config } = require('./config/environment');
+const { testConnection } = require('./config/database');
+const databaseService = require('./services/databaseService');
 
 class App {
   constructor() {
     this.app = express();
+    this.initializeDatabase();
     this.setupMiddleware();
     this.setupRoutes();
     this.setupErrorHandling();
+  }
+
+  async initializeDatabase() {
+    try {
+      const isConnected = await testConnection();
+      if (isConnected) {
+        // Initialize reference data
+        await databaseService.initializeReferenceData();
+      }
+    } catch (error) {
+      console.error('Database initialization failed:', error.message);
+      // Don't exit the process, just log the error
+      // The app can still function for some operations without the database
+    }
   }
 
   setupMiddleware() {
@@ -42,12 +59,21 @@ class App {
     this.app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
     // Health check route
-    this.app.get('/health', (req, res) => {
+    this.app.get('/health', async (req, res) => {
+      let dbStatus = 'disconnected';
+      try {
+        const isConnected = await testConnection();
+        dbStatus = isConnected ? 'connected' : 'disconnected';
+      } catch (error) {
+        dbStatus = 'error';
+      }
+
       res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        version: process.env.npm_package_version || '1.0.0'
+        version: process.env.npm_package_version || '1.0.0',
+        database: dbStatus
       });
     });
 

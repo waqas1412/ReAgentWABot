@@ -19,7 +19,8 @@
     "cors": "^2.8.5",
     "helmet": "^7.1.0",
     "morgan": "^1.10.0",
-    "localtunnel": "^2.0.2"
+    "localtunnel": "^2.0.2",
+    "@supabase/supabase-js": "^2.38.4"
   },
   "devDependencies": {
     "nodemon": "^3.0.2",
