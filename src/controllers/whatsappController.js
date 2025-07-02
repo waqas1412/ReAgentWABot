@@ -218,12 +218,24 @@ class WhatsAppController {
       if (message.startsWith('join')) {
         return {
           type: 'text',
-          content: `Welcome to ReAgentBot! 🏠\n\nI'm your AI real estate assistant. I can help you:\n• Find properties to buy or rent\n• List your property\n• Schedule viewings\n• And much more!\n\nJust tell me what you're looking for!`
+          content: `Welcome to ReAgentBot! 🏠\n\nI'm your AI real estate assistant. I can help you:\n• Search and find properties\n• List your properties\n• Update your listings\n• And much more!\n\nJust tell me what you're looking for in natural language!`
         };
       }
 
-      // Use the intelligent conversation service to process the message
-      const responseText = await conversationService.processMessage(from, body);
+      // Get or create user
+      const user = await databaseService.getOrCreateUserFromWhatsApp(from, profileName);
+      
+      // Use the enhanced conversation service to process the message
+      const responseMessages = await conversationService.processMessage(body, user);
+      
+      // Join multiple messages if needed (for WhatsApp we'll send the first one via TwiML)
+      const responseText = Array.isArray(responseMessages) ? responseMessages[0] : responseMessages;
+      
+      // Send additional messages via API if there are multiple responses
+      if (Array.isArray(responseMessages) && responseMessages.length > 1) {
+        // Send additional messages asynchronously via Twilio API
+        this.sendAdditionalMessages(from, responseMessages.slice(1));
+      }
       
       return {
         type: 'text',
@@ -236,6 +248,23 @@ class WhatsAppController {
         type: 'text',
         content: 'Sorry, I encountered an error processing your message. Please try again.'
       };
+    }
+  }
+
+  /**
+   * Send additional messages asynchronously
+   * @param {string} to - Phone number to send to
+   * @param {Array} messages - Additional messages to send
+   */
+  sendAdditionalMessages = async (to, messages) => {
+    try {
+      for (let i = 0; i < messages.length; i++) {
+        // Add a small delay between messages to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+        await twilioService.sendWhatsAppMessage(to, messages[i]);
+      }
+    } catch (error) {
+      console.error('Error sending additional messages:', error);
     }
   }
 

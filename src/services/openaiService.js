@@ -16,8 +16,9 @@ class OpenAIService {
    */
   async classifyIntent(message, isFirstMessage = false) {
     try {
-      const systemPrompt = `You are an intent classifier for a real estate WhatsApp bot. Analyze the user's message and return a JSON response with the following structure:
+      const systemPrompt = `You are an advanced AI assistant for an intelligent real estate WhatsApp bot. Your role is to classify user intents with high accuracy to automate real estate transactions for both buyers/renters and sellers/agents.
 
+Return a JSON response with this structure:
 {
   "intent": "greeting|buyer|renter|owner|agent|unclear",
   "hasPropertyLink": boolean,
@@ -25,33 +26,34 @@ class OpenAIService {
   "confidence": 0.0-1.0
 }
 
-Classification rules:
-- "greeting": General greetings like "Hi", "Hello", "Hey" without specific intent
-- "buyer": User wants to purchase property (keywords: buy, purchase, buying, looking to buy)
-- "renter": User wants to rent property (keywords: rent, rental, looking to rent, lease)
-- "owner": User owns property and wants to list/sell it (keywords: sell my house, list my property, I own)
-- "agent": User is a real estate agent (keywords: I'm an agent, real estate agent, broker)
-- "unclear": Cannot determine intent clearly
+ENHANCED CLASSIFICATION RULES:
+- "greeting": General greetings like "Hi", "Hello", "Hey" without specific real estate intent
+- "buyer": User wants to purchase property (keywords: buy, purchase, buying, looking to buy, investment)
+- "renter": User wants to rent property (keywords: rent, rental, looking to rent, lease, tenant)
+- "owner": User owns property and wants to list/sell it (keywords: sell my house, list my property, I own, my apartment)
+- "agent": User is a real estate agent (keywords: I'm an agent, real estate agent, broker, property manager)
+- "unclear": Cannot determine intent clearly - be conservative with this classification
 
-Additional detection:
-- "hasPropertyLink": true if message contains URLs, property listings, or references to specific properties
-- "isAddingProperty": true if user wants to add/list/sell a property (keywords: list, sell, add property, want to sell)
+INTELLIGENT DETECTION:
+- "hasPropertyLink": true if message contains URLs, property listings, or specific property references
+- "isAddingProperty": true if user wants to add/list/sell a property with clear intent indicators
 
-Be strict with classifications. If uncertain, use "unclear" and lower confidence.`;
+AUTOMATION FOCUS:
+Your accurate classification enables seamless automation between parties. High confidence (0.8+) enables immediate automated responses, medium confidence (0.5-0.7) triggers clarifying questions, low confidence (<0.5) requires human-like conversation.`;
 
       const userPrompt = `Message: "${message}"
 ${isFirstMessage ? 'Note: This is the user\'s first message to the bot.' : ''}
 
-Analyze this message and classify the user's intent.`;
+Analyze this message with enhanced intelligence for real estate automation.`;
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
         ],
         temperature: 0.1,
-        max_tokens: 200
+        max_tokens: 250
       });
 
       const content = response.choices[0].message.content.trim();
@@ -136,13 +138,13 @@ Analyze this message and classify the user's intent.`;
   }
 
   /**
-   * Extract property details from a message (if needed for future features)
+   * Extract property details from a message (enhanced with GPT-4o-mini)
    * @param {string} message 
    * @returns {Promise<object>}
    */
   async extractPropertyDetails(message) {
     try {
-      const systemPrompt = `Extract property details from the user's message and return a JSON response:
+      const systemPrompt = `You are an intelligent property detail extractor for a real estate automation system. Extract comprehensive property information and return JSON:
 
 {
   "propertyType": "apartment|house|commercial|land|other",
@@ -150,19 +152,28 @@ Analyze this message and classify the user's intent.`;
   "priceRange": "extracted price if mentioned",
   "bedrooms": number or null,
   "bathrooms": number or null,
-  "features": ["list", "of", "mentioned", "features"]
+  "features": ["list", "of", "mentioned", "features"],
+  "urgency": "high|medium|low",
+  "investmentIntent": boolean
 }
 
-If information is not clearly mentioned, use null or empty array.`;
+ENHANCED EXTRACTION RULES:
+- Detect implicit property types from context
+- Extract approximate locations from neighborhood descriptions
+- Identify investment vs. personal use intent
+- Recognize urgency indicators (ASAP, urgent, flexible timing)
+- Capture amenity preferences comprehensively
+
+If information is not clearly mentioned, use null or empty array. Be intelligent about inferring details from context.`;
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Extract property details from: "${message}"` }
         ],
         temperature: 0.1,
-        max_tokens: 300
+        max_tokens: 400
       });
 
       const content = response.choices[0].message.content.trim();
@@ -175,13 +186,15 @@ If information is not clearly mentioned, use null or empty array.`;
   }
 
   /**
-   * Convert natural language property message to rigid database format
+   * Convert natural language property message to rigid database format (enhanced)
    * @param {string} message - Message containing property listings
    * @returns {Promise<Array>} - Array of database-ready property objects
    */
   async convertToRigidFormat(message) {
     try {
-      const systemPrompt = `You are an expert property data converter for a WhatsApp real estate bot. Users send messages in ANY natural language format - casual, formal, mixed languages, incomplete info, etc. Your job is to extract ALL property information and convert it to our rigid database format.
+      const systemPrompt = `You are an expert property data converter for an intelligent real estate automation system. Your accuracy directly impacts the automation quality for both property owners and potential buyers/renters.
+
+CRITICAL: Extract ALL property information with maximum precision and convert to our rigid database format.
 
 REQUIRED OUTPUT FORMAT (return as JSON array):
 [
@@ -206,49 +219,34 @@ REQUIRED OUTPUT FORMAT (return as JSON array):
   }
 ]
 
-FLEXIBLE NATURAL LANGUAGE PROCESSING RULES:
-1. Handle ANY communication style (casual, formal, broken English, mixed Portuguese/English)
-2. Extract properties from: lists, paragraphs, one-liners, structured formats, emoji-heavy messages
-3. Convert colloquial terms: "place" → apartment, "cheap" → estimate reasonable price, "big" → estimate area
-4. Handle abbreviations: "2br" → 2 bedrooms, "1ba" → 1 bathroom, "80m" → 80 area_sqm
-5. Parse prices flexibly: "€2500", "2500 euros", "2.5k", "450k" → convert to numbers
-6. Smart location inference: "downtown" → central district, "near metro" → mention in description
-7. Handle incomplete info gracefully with reasonable defaults
-8. Extract contact info from any format: names, phone numbers (add +351 if Portuguese and missing)
-9. Multi-property messages: extract each property separately
-10. Property type inference: T1/T2 → apartment, "house" → house, "commercial space" → commercial
+ENHANCED PROCESSING INTELLIGENCE:
+1. Handle ANY communication style with superior understanding
+2. Extract properties from complex, unstructured messages
+3. Intelligent price conversion: "2.5k" → 2500, "450k" → 450000, "two thousand" → 2000
+4. Smart location inference with context understanding
+5. Advanced contact extraction from any format
+6. Multi-language support (Portuguese/English mix)
+7. Infer property types from subtle context clues
+8. Handle incomplete information with intelligent defaults
 
-INTELLIGENT DEFAULTS FOR MISSING INFO:
-- No country mentioned? Default "Portugal" (most users are Portuguese)
-- No city mentioned? If Portuguese location clues → "Lisbon", otherwise → "Lisbon" 
-- No district mentioned? Extract from context or use null
-- No price mentioned? Set to 1 (user can be asked to clarify)
-- Vague price like "cheap"? Estimate based on property type and location
-- No contact? Use null (system will ask user)
-- No area mentioned? Use null
-- No bedrooms? Try to infer from T1/T2 or use 1 as default
+INTELLIGENT DEFAULTS (when information missing):
+- Country: "Portugal" (primary market)
+- City: "Lisbon" (major market center)
+- Area: null (system will ask for clarification)
+- Contact: null (system will request details)
+- Status: "active" (new listings are active)
 
-CONTACT INFO PROCESSING:
-- Extract names from any format ("Call João", "Contact: Maria", "ask for Pedro")
-- Normalize phone numbers: add +351 if Portuguese context and no country code
-- Handle partial contact info gracefully
-
-EXAMPLES OF FLEXIBLE EXTRACTION:
-"Hey, got this nice place downtown" → apartment, Lisbon, downtown area
-"Selling house Porto 3 beds 450k" → house, Porto, 3 bedrooms, 450000 price
-"T2 Cascais €1800/month" → apartment T2, Cascais, 1800 rent
-"Commercial space 200m² restaurant" → commercial, 200 area_sqm
-
-Extract ALL properties and convert to EXACT format above. Be creative but accurate!`;
+AUTOMATION-FOCUSED EXTRACTION:
+Your output enables immediate automation between property owners and interested parties. Accuracy is critical for seamless transactions.`;
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Convert to rigid database format:\n\n${message}` }
+          { role: 'user', content: `Convert to rigid database format with maximum accuracy:\n\n${message}` }
         ],
         temperature: 0.1,
-        max_tokens: 2000
+        max_tokens: 2500
       });
 
       const content = response.choices[0].message.content.trim();
@@ -303,66 +301,332 @@ Extract ALL properties and convert to EXACT format above. Be creative but accura
   }
 
   /**
-   * Classify if a message contains property listings to add
+   * Classify if a message contains property listings to add (enhanced)
    * @param {string} message 
    * @returns {Promise<object>}
    */
   async classifyPropertyAddition(message) {
     try {
-      const systemPrompt = `You're analyzing messages for a WhatsApp real estate bot. Users send property listings in ANY natural language format. Detect if they want to ADD/LIST/SELL properties to the database. Return JSON:
+      const systemPrompt = `You are analyzing messages for an intelligent real estate automation system. Detect property addition intent with high precision to enable seamless automation.
 
+Return JSON:
 {
   "containsProperties": boolean,
   "propertiesCount": number,
   "isStructuredListing": boolean,
-  "confidence": 0.0-1.0
+  "confidence": 0.0-1.0,
+  "automationReady": boolean
 }
 
-PROPERTY ADDITION INDICATORS (look for ANY):
+ENHANCED PROPERTY ADDITION DETECTION:
 - Direct intent: "add property", "list my place", "want to sell", "for rent"
-- Property details with selling/rental intent: price + location + property info
-- Multiple property listings in structured/unstructured format
-- Any combination of: property type, location, price, bedrooms, contact info
+- Property details with clear intent: price + location + property info
+- Multiple property listings in any format
 - Commercial property listings
-- Even minimal info like "selling house Porto" counts as property addition
+- Investment property discussions
+- Even minimal info like "selling house Porto" counts
 
-FLEXIBLE DETECTION RULES:
-- Be generous with classification - users express intent casually
-- "Got this apartment..." with price/location = property addition
-- Mixed languages okay: "Tenho apartment for rent"
-- Incomplete info still counts if intent is clear
-- One-liners like "selling house" = property addition
-- Emoji-heavy structured listings = property addition
-- Multiple properties in paragraph form = property addition
+ADVANCED DETECTION CAPABILITIES:
+- Understand context and implicit intent
+- Handle multilingual expressions
+- Detect structured vs. unstructured listings
+- Assess if data is complete enough for automation
 
-CONFIDENCE SCORING:
-- 0.9+: Clear property addition intent with details
-- 0.7-0.8: Some property info, likely addition intent
-- 0.5-0.6: Vague but probable property addition
-- <0.5: Unlikely to be property addition
+CONFIDENCE & AUTOMATION SCORING:
+- 0.9+: Clear intent, ready for immediate automation
+- 0.7-0.8: Likely intent, minor clarification needed
+- 0.5-0.6: Possible intent, requires confirmation
+- <0.5: Unlikely property addition
 
-Count ALL properties mentioned, even if details are incomplete.`;
+"automationReady": true if the message contains enough information for immediate processing without additional clarification.`;
 
       const response = await this.client.chat.completions.create({
-        model: 'gpt-3.5-turbo',
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Analyze this message: "${message}"` }
+          { role: 'user', content: `Analyze for property addition with automation intelligence: "${message}"` }
         ],
         temperature: 0.1,
-        max_tokens: 200
+        max_tokens: 250
       });
 
-             const content = response.choices[0].message.content.trim();
-       const cleanedContent = content.replace(/```json\s*|\s*```/g, '').trim();
-       return JSON.parse(cleanedContent);
+      const content = response.choices[0].message.content.trim();
+      const cleanedContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanedContent);
+      
+      // Fallback for missing automationReady field
+      if (result.automationReady === undefined) {
+        result.automationReady = result.confidence >= 0.8 && result.containsProperties;
+      }
+      
+      return result;
     } catch (error) {
       console.error('Property addition classification error:', error);
       return {
         containsProperties: false,
         propertiesCount: 0,
         isStructuredListing: false,
-        confidence: 0
+        confidence: 0,
+        automationReady: false
+      };
+    }
+  }
+
+  /**
+   * Classify user intent for property operations (enhanced)
+   * @param {string} message - User's message
+   * @param {object} user - User object with role information
+   * @returns {Promise<object>} - Intent classification
+   */
+  async classifyPropertyIntent(message, user) {
+    try {
+      const userRole = user?.user_roles?.role || 'renter';
+      
+      const systemPrompt = `You are the intelligence engine for a real estate automation system. Your accurate classification enables seamless automation between property seekers and property providers.
+
+Return JSON:
+{
+  "intent": "search|view_own_listings|update_property|manage_property|add_property|unclear",
+  "operation": "search|list|update|delete|create|status_change",
+  "confidence": 0.0-1.0,
+  "requiresSearch": boolean,
+  "requiresManagement": boolean,
+  "urgency": "high|medium|low",
+  "automationLevel": "full|partial|manual"
+}
+
+User role: ${userRole}
+
+ENHANCED INTENT CLASSIFICATION:
+- "search": User wants to find/browse available properties (any role)
+- "view_own_listings": Owner/agent wants to see their properties
+- "update_property": Owner/agent wants to modify property details
+- "manage_property": Owner/agent wants to change status (sold/active/inactive)
+- "add_property": User wants to list new property
+- "unclear": Cannot determine intent clearly
+
+INTELLIGENT INDICATORS:
+SEARCH: "show me properties", "looking for", "find apartments", "interested in", "need details"
+MANAGEMENT: "my listings", "my properties", "show my apartments", "update price", "mark as sold"
+
+AUTOMATION LEVELS:
+- "full": Can be completely automated without human intervention
+- "partial": Requires minimal clarification or confirmation
+- "manual": Needs human assistance or complex decision making
+
+Your classification directly impacts the user experience and automation efficiency.`;
+
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Classify with automation intelligence: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 300
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const cleanedContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanedContent);
+      
+      // Add default values for new fields if missing
+      if (!result.urgency) result.urgency = 'medium';
+      if (!result.automationLevel) {
+        result.automationLevel = result.confidence >= 0.8 ? 'full' : result.confidence >= 0.6 ? 'partial' : 'manual';
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Property intent classification error:', error);
+      return {
+        intent: 'unclear',
+        operation: 'search',
+        confidence: 0.0,
+        requiresSearch: false,
+        requiresManagement: false,
+        urgency: 'medium',
+        automationLevel: 'manual'
+      };
+    }
+  }
+
+  /**
+   * Parse natural language search query into database filters (enhanced)
+   * @param {string} message - User's search message
+   * @returns {Promise<object>} - Database filter object
+   */
+  async parseSearchQuery(message) {
+    try {
+      const systemPrompt = `You are an intelligent search query parser for a real estate automation system. Convert natural language into precise database filters to enable automated property matching.
+
+Return JSON:
+{
+  "filters": {
+    "property_type": "apartment|house|commercial|land|null",
+    "bedrooms": {"min": number, "max": number, "exact": number},
+    "bathrooms": {"min": number, "max": number, "exact": number},
+    "price": {"min": number, "max": number, "currency": "EUR"},
+    "area": {"min": number, "max": number},
+    "status": "active|inactive|sold|rented",
+    "listing_type": "rent|sale",
+    "location": {
+      "country": "string",
+      "city": "string", 
+      "district": "string",
+      "area_description": "downtown|center|suburban|etc"
+    },
+    "features": ["parking", "garden", "balcony", "elevator", "furnished"],
+    "apartment_type": "T1|T2|T3|T4|T5|Studio"
+  },
+  "sorting": {
+    "field": "price|area|bedrooms|created_at",
+    "order": "asc|desc"
+  },
+  "limit": 10,
+  "searchTerms": ["extracted", "keywords"],
+  "userIntent": "buying|renting|browsing|investment",
+  "priorityFeatures": ["must-have", "features"]
+}
+
+ENHANCED NATURAL LANGUAGE PROCESSING:
+- Extract all criteria from complex, casual language
+- Handle ranges intelligently: "under €2000" → max: 2000, "3+ bedrooms" → min: 3
+- Location inference: "downtown" → area_description, "Lisbon center" → city + area_description
+- Property types: Advanced context understanding for property classification
+- Price formats: "€2k", "2000 euros", "2.5k", "affordable", "luxury" → intelligent conversion
+- Implicit criteria: "family home" → house + bedrooms≥2, "student apartment" → small + budget
+- Investment intent detection: "portfolio", "investment", "yield" → investment classification
+
+INTELLIGENT DEFAULTS:
+- status: "active" (only show available properties)
+- limit: 10 (optimal for WhatsApp display)
+- listing_type: intelligently infer from context
+
+Your parsing enables automated property matching that feels magical to users.`;
+
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Parse with enhanced intelligence: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 1000
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const cleanedContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanedContent);
+      
+      // Add default values for new fields
+      if (!result.userIntent) result.userIntent = 'browsing';
+      if (!result.priorityFeatures) result.priorityFeatures = [];
+      
+      return result;
+    } catch (error) {
+      console.error('Search query parsing error:', error);
+      return {
+        filters: { status: 'active' },
+        sorting: { field: 'created_at', order: 'desc' },
+        limit: 10,
+        searchTerms: [],
+        userIntent: 'browsing',
+        priorityFeatures: []
+      };
+    }
+  }
+
+  /**
+   * Parse property update requests from natural language (enhanced)
+   * @param {string} message - Update request message
+   * @param {Array} userProperties - User's properties for context
+   * @returns {Promise<object>} - Update instruction object
+   */
+  async parseUpdateRequest(message, userProperties = []) {
+    try {
+      const propertiesContext = userProperties.length > 0 
+        ? `User's properties: ${userProperties.map(p => `ID: ${p.id}, Address: ${p.address}, Type: ${p.property_type}, Price: €${p.price}`).join('; ')}`
+        : 'No properties provided for context';
+
+      const systemPrompt = `You are an intelligent property update parser for a real estate automation system. Parse natural language update requests with high accuracy to enable automated property management.
+
+Return JSON:
+{
+  "propertyIdentification": {
+    "method": "single|address|type|id|selection_needed",
+    "criteria": "identification criteria",
+    "propertyId": "specific ID if identifiable",
+    "ambiguous": boolean,
+    "confidence": 0.0-1.0
+  },
+  "updates": {
+    "price": number,
+    "bedrooms": number,
+    "bathrooms": number,
+    "area": number,
+    "status": "active|inactive|sold|rented",
+    "description": "string",
+    "property_link": "url",
+    "contact_info": "json string"
+  },
+  "action": "update|status_change|delete",
+  "confidence": 0.0-1.0,
+  "needsConfirmation": boolean,
+  "automationReady": boolean
+}
+
+ENHANCED PROPERTY IDENTIFICATION:
+- "single": User has only one property (automatic)
+- "address": Identified by location/address mentions
+- "type": Identified by property type with disambiguation
+- "id": Specific property ID or number mentioned
+- "selection_needed": Ambiguous, requires user selection
+
+INTELLIGENT UPDATE EXTRACTION:
+- Price updates: "€2200", "2.2k", "increase by 10%", "reduce to market rate"
+- Status changes: "sold", "rented", "off market", "back on market"
+- Description updates: extract new description content
+- Contact updates: extract new contact information
+
+AUTOMATION ASSESSMENT:
+"automationReady": true if the update can be processed immediately without additional confirmation.
+"needsConfirmation": true for critical changes (large price changes, status changes)
+
+CONTEXT AWARENESS:
+Use the provided properties context to resolve ambiguities intelligently.
+
+${propertiesContext}`;
+
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Parse update request with automation intelligence: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 800
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const cleanedContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanedContent);
+      
+      // Add default values for new fields
+      if (result.automationReady === undefined) {
+        result.automationReady = result.confidence >= 0.8 && !result.needsConfirmation;
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Update request parsing error:', error);
+      return {
+        propertyIdentification: { method: 'selection_needed', ambiguous: true, confidence: 0.0 },
+        updates: {},
+        action: 'update',
+        confidence: 0.0,
+        needsConfirmation: true,
+        automationReady: false
       };
     }
   }
