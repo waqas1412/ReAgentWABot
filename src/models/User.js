@@ -50,11 +50,12 @@ class User extends BaseModel {
    * @returns {Object|null} - User with role data
    */
   async getUserWithRole(userId) {
-    const { data, error } = await this.db
+    // Use admin client for role queries to bypass RLS
+    const { data, error } = await this.adminDb
       .from('users')
       .select(`
         *,
-        user_roles:role_id (
+        user_roles!role_id (
           id,
           role
         )
@@ -77,11 +78,12 @@ class User extends BaseModel {
   async getUserByPhoneWithRole(phoneNumber) {
     const cleanNumber = phoneNumber.replace('whatsapp:', '');
     
-    const { data, error } = await this.db
+    // Use admin client for role queries to bypass RLS
+    const { data, error } = await this.adminDb
       .from('users')
       .select(`
         *,
-        user_roles:role_id (
+        user_roles!role_id (
           id,
           role
         )
@@ -207,7 +209,7 @@ class User extends BaseModel {
       .from('users')
       .select(`
         *,
-        user_roles:role_id (
+        user_roles!role_id (
           id,
           role
         )
