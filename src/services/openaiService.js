@@ -386,8 +386,8 @@ CONFIDENCE & AUTOMATION SCORING:
 
 Return JSON:
 {
-  "intent": "search|view_own_listings|update_property|manage_property|add_property|unclear",
-  "operation": "search|list|update|delete|create|status_change",
+  "intent": "search|view_own_listings|update_property|manage_property|add_property|delete_property|set_availability|unclear",
+  "operation": "search|list|update|delete|create|status_change|set_schedule",
   "confidence": 0.0-1.0,
   "requiresSearch": boolean,
   "requiresManagement": boolean,
@@ -408,6 +408,8 @@ ENHANCED INTENT CLASSIFICATION:
 INTELLIGENT INDICATORS:
 SEARCH: "show me properties", "looking for", "find apartments", "interested in", "need details"
 MANAGEMENT: "my listings", "my properties", "show my apartments", "update price", "mark as sold"
+DELETE: "delete property", "remove my listing", "delist my apartment"
+SET AVAILABILITY: "set viewing times", "update my availability", "i am available on", "change schedule"
 
 AUTOMATION LEVELS:
 - "full": Can be completely automated without human intervention
@@ -460,6 +462,8 @@ Your classification directly impacts the user experience and automation efficien
     try {
       const systemPrompt = `You are an intelligent search query parser for a real estate automation system. Convert natural language into precise database filters to enable automated property matching.
 
+CRITICAL: Be VERY careful with ambiguous numbers. When in doubt, DO NOT make assumptions.
+
 Return JSON:
 {
   "filters": {
@@ -470,13 +474,21 @@ Return JSON:
     "area": {"min": number, "max": number},
     "status": "active|inactive|sold|rented",
     "listing_type": "rent|sale",
+    "floor": "string (e.g., 'ground', 'top', 'penthouse')",
+    "built_year": {"min": number, "max": number},
+    "available_from": "YYYY-MM-DD",
     "location": {
       "country": "string",
       "city": "string", 
       "district": "string",
       "area_description": "downtown|center|suburban|etc"
     },
-    "features": ["parking", "garden", "balcony", "elevator", "furnished"],
+    "amenities": {
+      "elevator": "boolean",
+      "furnished": "boolean",
+      "air_conditioning": "boolean",
+      "work_room": "boolean"
+    },
     "apartment_type": "T1|T2|T3|T4|T5|Studio"
   },
   "sorting": {
@@ -484,32 +496,42 @@ Return JSON:
     "order": "asc|desc"
   },
   "limit": 10,
-  "searchTerms": ["extracted", "keywords"],
+  "searchTerms": ["keywords for full-text search on address/description"],
   "userIntent": "buying|renting|browsing|investment",
-  "priorityFeatures": ["must-have", "features"]
+  "priorityFeatures": ["must-have", "features"],
+  "confidence": 0.0-1.0,
+  "ambiguityWarnings": ["warning1", "warning2"]
 }
 
-ENHANCED NATURAL LANGUAGE PROCESSING:
-- Extract all criteria from complex, casual language
-- Handle ranges intelligently: "under €2000" → max: 2000, "3+ bedrooms" → min: 3
-- Location inference: "downtown" → area_description, "Lisbon center" → city + area_description
-- Property types: Advanced context understanding for property classification
-- Price formats: "€2k", "2000 euros", "2.5k", "affordable", "luxury" → intelligent conversion
-- Implicit criteria: "family home" → house + bedrooms≥2, "student apartment" → small + budget
-- Investment intent detection: "portfolio", "investment", "yield" → investment classification
+ENHANCED INTELLIGENCE WITH AMBIGUITY AWARENESS:
+- Numbers with clear context: "under €2000" → price.max: 2000
+- Numbers without context: "apartment in 3000" → DO NOT assume location, flag as ambiguous
+- Price indicators: "€", "euro", "budget", "under", "up to", "max" → price
+- Location indicators: "in [city]", "near [place]", "postal code" → location
+- Area indicators: "sqm", "m²", "square meters" → area
+- If standalone number without context → flag as potentially ambiguous
+- "new construction" -> built_year: {"min": <current_year - 1>}
+- "available now" -> available_from: <today's_date>
+
+SMART INTERPRETATION RULES:
+1. If number has currency symbol or price words → price
+2. If number with clear location context → location
+3. If number with area units → area
+4. If standalone number without context → flag as potentially ambiguous
 
 INTELLIGENT DEFAULTS:
-- status: "active" (only show available properties)
-- limit: 10 (optimal for WhatsApp display)
-- listing_type: intelligently infer from context
+- Country: "Portugal" (primary market)
+- City: "Lisbon" (major market center) - ONLY if other location context exists
+- Status: "active" (new listings are active)
+- DO NOT guess location from standalone numbers
 
-Your parsing enables automated property matching that feels magical to users.`;
+Your parsing should enable precise automation while avoiding incorrect assumptions.`;
 
       const response = await this.client.chat.completions.create({
         model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
-          { role: 'user', content: `Parse with enhanced intelligence: "${message}"` }
+          { role: 'user', content: `Parse with enhanced intelligence and ambiguity awareness: "${message}"` }
         ],
         temperature: 0.1,
         max_tokens: 1000
@@ -522,6 +544,8 @@ Your parsing enables automated property matching that feels magical to users.`;
       // Add default values for new fields
       if (!result.userIntent) result.userIntent = 'browsing';
       if (!result.priorityFeatures) result.priorityFeatures = [];
+      if (!result.confidence) result.confidence = 0.8;
+      if (!result.ambiguityWarnings) result.ambiguityWarnings = [];
       
       return result;
     } catch (error) {
@@ -532,7 +556,9 @@ Your parsing enables automated property matching that feels magical to users.`;
         limit: 10,
         searchTerms: [],
         userIntent: 'browsing',
-        priorityFeatures: []
+        priorityFeatures: [],
+        confidence: 0.3,
+        ambiguityWarnings: ['Failed to parse query intelligently']
       };
     }
   }
@@ -628,6 +654,140 @@ ${propertiesContext}`;
         needsConfirmation: true,
         automationReady: false
       };
+    }
+  }
+
+  /**
+   * Parses natural language availability into a structured schedule.
+   * @param {string} message - The user's message about their availability.
+   * @returns {Promise<object>} - A structured availability object.
+   */
+  async parseAvailability(message) {
+    try {
+      const systemPrompt = `You are an expert schedule parser for a real estate bot. Convert natural language availability into a structured JSON array.
+
+The output must be an array of objects, each with "day" (full weekday name, capitalized), "startTime" (HH:MM), and "endTime" (HH:MM).
+
+- Infer weekdays: "weekdays" -> Monday-Friday.
+- Handle time ranges: "10 to 2", "14:00-17:00".
+- Handle AM/PM. Assume PM for ambiguous times like "2-5" unless morning is specified.
+- Handle multiple rules in one sentence.
+
+Example 1: "I'm free on Mondays and Wednesdays from 2 PM to 5 PM"
+Output:
+[
+  {"day": "Monday", "startTime": "14:00", "endTime": "17:00"},
+  {"day": "Wednesday", "startTime": "14:00", "endTime": "17:00"}
+]
+
+Example 2: "Weekdays 9am-12pm and 2pm-5pm"
+Output:
+[
+  {"day": "Monday", "startTime": "09:00", "endTime": "12:00"},
+  {"day": "Monday", "startTime": "14:00", "endTime": "17:00"},
+  {"day": "Tuesday", "startTime": "09:00", "endTime": "12:00"},
+  {"day": "Tuesday", "startTime": "14:00", "endTime": "17:00"},
+  {"day": "Wednesday", "startTime": "09:00", "endTime": "12:00"},
+  {"day": "Wednesday", "startTime": "14:00", "endTime": "17:00"},
+  {"day": "Thursday", "startTime": "09:00", "endTime": "12:00"},
+  {"day": "Thursday", "startTime": "14:00", "endTime": "17:00"},
+  {"day": "Friday", "startTime": "09:00", "endTime": "12:00"},
+  {"day": "Friday", "startTime": "14:00", "endTime": "17:00"}
+]
+
+Example 3: "Tuesday 10:00 - 13:00"
+Output:
+[
+  {"day": "Tuesday", "startTime": "10:00", "endTime": "13:00"}
+]
+`;
+
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Parse this schedule: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 1000,
+        response_format: { type: "json_object" },
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const result = JSON.parse(content);
+
+      // The prompt might return an object with a key, let's extract the array.
+      const availabilityArray = Array.isArray(result) ? result : result[Object.keys(result)[0]];
+
+      if (!Array.isArray(availabilityArray)) {
+        throw new Error("Parsed availability is not an array.");
+      }
+
+      return { success: true, schedule: availabilityArray };
+    } catch (error) {
+      console.error('Availability parsing error:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Parses an owner's response to a viewing request.
+   * @param {string} message - The owner's response message.
+   * @returns {Promise<object>} - A structured object with the owner's intent.
+   */
+  async parseOwnerResponse(message) {
+    try {
+      const systemPrompt = `You are an expert at parsing responses from property owners/agents about viewing requests. Extract the intent and any relevant details.
+
+The user is responding to a request for a viewing. Their message will contain a short appointment ID (e.g., "Confirm ab12").
+
+The possible intents are: "confirm", "decline", "suggest_new_time".
+
+- "confirm": The owner agrees to the time.
+- "decline": The owner rejects the time.
+- "suggest_new_time": The owner proposes a different time. If so, extract the new time suggestion.
+
+Return JSON:
+{
+  "intent": "confirm|decline|suggest_new_time|unclear",
+  "appointmentId": "the short ID, e.g., ab12",
+  "newTimeSuggestion": "The new time if suggested, e.g., Tuesday at 3pm"
+}
+
+Example 1: "Confirm ab12"
+Output:
+{ "intent": "confirm", "appointmentId": "ab12", "newTimeSuggestion": null }
+
+Example 2: "Decline ab12, I am not available"
+Output:
+{ "intent": "decline", "appointmentId": "ab12", "newTimeSuggestion": null }
+
+Example 3: "Suggest Tuesday at 3pm for ab12"
+Output:
+{ "intent": "suggest_new_time", "appointmentId": "ab12", "newTimeSuggestion": "Tuesday at 3pm" }
+
+Example 4: "I can't do that time for ab12. How about Friday morning?"
+Output:
+{ "intent": "suggest_new_time", "appointmentId": "ab12", "newTimeSuggestion": "Friday morning" }
+`;
+
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Parse this owner response: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 200,
+        response_format: { type: "json_object" },
+      });
+
+      const content = response.choices[0].message.content.trim();
+      return JSON.parse(content);
+
+    } catch (error) {
+      console.error('Owner response parsing error:', error);
+      return { intent: 'unclear' };
     }
   }
 }

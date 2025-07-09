@@ -41,6 +41,70 @@ class DisplayService {
   }
 
   /**
+   * Formats search results for WhatsApp display.
+   * @param {object} searchResults - The search results object from searchService.
+   * @param {boolean} isRefinement - Whether this is a refinement search.
+   * @returns {Array} An array of formatted messages.
+   */
+  formatSearchResults(searchResults, isRefinement = false) {
+    if (searchResults.totalCount === 0) {
+      return ["I couldn't find any properties matching your search. Try broadening your criteria!"];
+    }
+
+    const header = `🔍 Found *${searchResults.totalCount}* properties for your search! Here are the top ${searchResults.results.length}:`;
+    const messages = [header];
+
+    searchResults.results.forEach((property, index) => {
+      // Main details
+      let message = `*${index + 1}. ${property.address}*\n\n`;
+      message += `💰 *Price:* €${this.formatPrice(property.price)}\n`;
+      
+      // Location
+      if (property.districts) {
+        let location = property.districts.district;
+        if (property.districts.cities) {
+          location += `, ${property.districts.cities.city}`;
+        }
+        message += `📍 *Location:* ${location}\n`;
+      }
+      message += '\n'; // Extra space
+
+      // Core stats
+      let stats = [];
+      if (property.bedrooms) stats.push(`🛏️ *Beds:* ${property.bedrooms}`);
+      if (property.bathrooms) stats.push(`🛁 *Baths:* ${property.bathrooms}`);
+      if (property.area) stats.push(`📐 *Area:* ${property.area}m²`);
+      if (property.floor) stats.push(`🏢 *Floor:* ${this.capitalizeFirst(property.floor)}`);
+      if(stats.length > 0) message += stats.join(' | ') + '\n\n';
+      
+      // Features
+      let features = [];
+      if (property.furnished) features.push('Furnished');
+      if (property.elevator) features.push('Elevator');
+      if (property.air_conditioning) features.push('AC');
+      if (property.work_room) features.push('Work Room');
+      if (features.length > 0) {
+        message += `✨ *Features:* _${features.join(', ')}_\n`;
+      }
+
+      // Extra details
+      if (property.built_year) message += `🏗️ *Built:* ${property.built_year}\n`;
+      if (property.available_from) message += `🗓️ *Available:* ${new Date(property.available_from).toLocaleDateString()}\n`;
+
+      // Link
+      if (property.property_link) {
+        message += `\n🔗 *Link:* ${property.property_link}\n`;
+      }
+      
+      message += `\n_To see details or book a viewing, reference property ID: *${property.id.substring(0, 4)}*_`;
+      
+      messages.push(message);
+    });
+
+    return messages;
+  }
+
+  /**
    * Format a single property card
    * @param {object} property - Property object
    * @param {number} index - Property index in results
@@ -68,31 +132,41 @@ class DisplayService {
   }
 
   /**
-   * Format user's property listings for management
-   * @param {Array} properties - User's properties
-   * @param {object} user - User object
-   * @returns {Array} - Formatted message chunks
+   * Formats a user's property listings for display on WhatsApp.
+   * @param {Array} properties - The array of property objects.
+   * @param {object} user - The user object.
+   * @returns {Array} An array of formatted messages.
    */
   formatUserProperties(properties, user) {
-    if (properties.length === 0) {
-      return [`🏠 *Your Property Listings*\n\n📭 You don't have any properties listed yet.`];
+    if (!properties || properties.length === 0) {
+      return ["You don't have any properties listed yet."];
     }
 
-    const messages = [];
-    const analytics = this.calculateQuickAnalytics(properties);
-    const summary = this.formatPropertySummary(properties.length, analytics, user);
-    messages.push(summary);
+    const role = user.user_roles?.role || 'user';
+    const header = `🏠 *Your Properties (${this.capitalizeFirst(role)})*\n\nHere are the properties you have listed with us:`;
+    
+    const messages = [header];
 
-    let currentMessage = '';
-    for (let i = 0; i < properties.length; i++) {
-      const propertyText = this.formatUserPropertyCard(properties[i], i + 1);
-      currentMessage += propertyText;
-      if (i < properties.length - 1) {
-        currentMessage += '\n═'.repeat(25) + '\n\n';
+    properties.forEach((property, index) => {
+      let message = `*${index + 1}. ${property.address}*\n`;
+      message += `Status: _${this.capitalizeFirst(property.status || 'N/A')}_\n`;
+      message += `Price: €${this.formatPrice(property.price)}\n`;
+      if (property.bedrooms) {
+        message += `Beds: ${property.bedrooms} | `;
       }
-    }
+      if (property.bathrooms) {
+        message += `Baths: ${property.bathrooms} | `;
+      }
+      if (property.area) {
+        message += `Area: ${property.area}m²\n`;
+      }
+      message += `\n_To manage this property, reference ID: ${property.id.substring(0, 4)}_`;
+      
+      messages.push(message);
+    });
 
-    messages.push(currentMessage);
+    messages.push("You can *update*, *delete*, or set the *availability* for any of your properties by sending a message with the property ID.");
+
     return messages;
   }
 
@@ -174,17 +248,23 @@ class DisplayService {
     return emojis[status] || '❓';
   }
 
+  /**
+   * Formats a price with commas for readability.
+   * @param {number} price - The price to format.
+   * @returns {string} The formatted price.
+   */
   formatPrice(price) {
-    if (price >= 1000000) {
-      return `${(price / 1000000).toFixed(1)}M`;
-    } else if (price >= 1000) {
-      return `${(price / 1000).toFixed(0)}k`;
-    }
-    return price.toString();
+    if (price === null || price === undefined) return 'N/A';
+    return price.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   }
 
+  /**
+   * Capitalizes the first letter of a string.
+   * @param {string} str - The string to capitalize.
+   * @returns {string} The capitalized string.
+   */
   capitalizeFirst(str) {
-    if (!str || typeof str !== 'string') return 'Property';
+    if (!str) return '';
     return str.charAt(0).toUpperCase() + str.slice(1);
   }
 

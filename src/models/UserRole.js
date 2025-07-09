@@ -101,8 +101,8 @@ class UserRole extends BaseModel {
    * @param {string} role - Role to validate
    * @returns {boolean} - True if valid
    */
-  static isValidRole(role) {
-    const validRoles = ['renter', 'agent', 'owner'];
+  isValidRole(role) {
+    const validRoles = ['renter', 'agent', 'owner', 'buyer'];
     return validRoles.includes(role);
   }
 }

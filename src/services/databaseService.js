@@ -62,13 +62,8 @@ class DatabaseService {
    * @returns {Object} - User object with role
    */
   async getOrCreateUserFromWhatsApp(phoneNumber, name = null) {
-    try {
-      const cleanNumber = phoneNumber.replace('whatsapp:', '');
-      return await User.getOrCreateUser(cleanNumber, { name });
-    } catch (error) {
-      console.error('Error getting/creating user:', error);
-      throw error;
-    }
+    const cleanNumber = phoneNumber.replace('whatsapp:', '');
+    return await User.getOrCreateUser(cleanNumber, { name });
   }
 
   /**

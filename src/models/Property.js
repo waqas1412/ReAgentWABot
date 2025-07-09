@@ -87,9 +87,13 @@ class Property extends BaseModel {
         districts:district_id (
           id,
           district,
-          countries:country_id (
+          cities:city_id (
             id,
-            country
+            city,
+            countries:country_id (
+              id,
+              country
+            )
           )
         )
       `)
@@ -152,7 +156,11 @@ class Property extends BaseModel {
         ),
         districts:district_id (
           id,
-          district
+          district,
+          cities:city_id (
+            id,
+            city
+          )
         )
       `);
 

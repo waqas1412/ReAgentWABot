@@ -85,19 +85,11 @@ class PropertyParsingService {
 
       console.log(`[PROPERTY_PARSING] Processing complete. ${results.filter(r => r.success).length} successful, ${results.filter(r => !r.success).length} failed`);
 
-      const response = this.formatPropertyAdditionResponse(results);
-      console.log(`[PROPERTY_PARSING] Response length: ${response.length} characters`);
-      
-      // Check if response is too long for WhatsApp (1600 char limit)
-      if (response.length > 1600) {
-        console.log(`[PROPERTY_PARSING] Response too long, chunking message`);
-        return this.chunkLongResponse(response);
-      }
-      
-      return response;
+      return results;
     } catch (error) {
       console.error('[PROPERTY_PARSING] Error processing property listings:', error);
-      return this.formatRichMessage("❌ Sorry, I encountered an error processing your property listings. Please try again.");
+      // Re-throw the error so the calling service can handle it and notify the user.
+      throw error;
     }
   }
 
@@ -188,19 +180,22 @@ class PropertyParsingService {
     const result = {};
 
     try {
-      // Get or create country with proper duplicate prevention
+      // Step 1: Find or create the Country
       if (locationData.country_name) {
         result.country = await this.findOrCreateCountryNoDuplicates(locationData.country_name);
       }
 
-      // Get or create city with proper duplicate prevention
+      // Step 2: Find or create the City, linked to the Country
       if (locationData.city_name && result.country?.id) {
         result.city = await this.findOrCreateCityNoDuplicates(locationData.city_name, result.country.id);
       }
 
-      // Get or create district with proper duplicate prevention
-      if (locationData.district_name && result.country?.id) {
-        result.district = await this.findOrCreateDistrictNoDuplicates(locationData.district_name, result.country.id);
+      // Step 3: Find or create the District, linked to the City
+      if (locationData.district_name && result.city?.id) {
+        result.district = await this.findOrCreateDistrictNoDuplicates(locationData.district_name, result.city.id);
+      } else if (locationData.district_name) {
+        // Handle case where district is provided but city is not. We cannot create it.
+        console.warn(`[LOCATION_CREATE] Could not create district "${locationData.district_name}" because city was not specified or found.`);
       }
 
       return result;
@@ -554,46 +549,27 @@ class PropertyParsingService {
    * @param {string} countryId - Country ID
    * @returns {Promise<object>} - District record
    */
-  async findOrCreateDistrictNoDuplicates(districtName, countryId) {
+  async findOrCreateDistrictNoDuplicates(districtName, cityId) {
     const normalizedName = this.normalizeLocationName(districtName);
     
     try {
-      console.log(`[DISTRICT_CREATE] Processing: ${normalizedName} in country ${countryId}`);
+      console.log(`[DISTRICT_CREATE] Processing: ${normalizedName} in city ${cityId}`);
       
       District.useAdminDb();
-      const { data: existingDistricts, error: searchError } = await District.adminDb
-        .from('districts')
-        .select('*')
-        .ilike('district', normalizedName)
-        .eq('country_id', countryId)
-        .limit(1);
+      // Pass cityId to the findByName method
+      const existingDistrict = await District.findByName(normalizedName, cityId, true);
       
-      if (searchError && searchError.code !== 'PGRST116') {
-        throw searchError;
-      }
-      
-      if (existingDistricts && existingDistricts.length > 0) {
-        console.log(`[DISTRICT_CREATE] Found existing: ${existingDistricts[0].district} (ID: ${existingDistricts[0].id})`);
+      if (existingDistrict) {
+        console.log(`[DISTRICT_CREATE] Found existing: ${existingDistrict.district} (ID: ${existingDistrict.id})`);
         District.useUserDb();
-        return existingDistricts[0];
+        return existingDistrict;
       }
 
       console.log(`[DISTRICT_CREATE] Creating new: ${normalizedName}`);
-      const { data: created, error: createError } = await District.adminDb
-        .from('districts')
-        .insert({ district: normalizedName, country_id: countryId })
-        .select()
-        .single();
+      // Pass cityId to the create method
+      const created = await District.createIfNotExists(normalizedName, cityId, true);
       
       District.useUserDb();
-      
-      if (createError) {
-        if (createError.message && createError.message.includes('duplicate key')) {
-          console.log(`[DISTRICT_CREATE] Duplicate key error, searching again for: ${normalizedName}`);
-          return await this.findOrCreateDistrictNoDuplicates(districtName, countryId);
-        }
-        throw createError;
-      }
       
       console.log(`[DISTRICT_CREATE] Created: ${created.district} (ID: ${created.id})`);
       return created;

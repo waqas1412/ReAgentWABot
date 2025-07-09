@@ -15,6 +15,7 @@ const { errorHandler, notFoundHandler } = require('./middleware/errorHandler');
 const { config } = require('./config/environment');
 const { testConnection } = require('./config/database');
 const databaseService = require('./services/databaseService');
+const appointmentService = require('./services/appointmentService');
 
 class App {
   constructor() {
@@ -23,6 +24,7 @@ class App {
     this.setupMiddleware();
     this.setupRoutes();
     this.setupErrorHandling();
+    this.setupCleanupInterval();
   }
 
   async initializeDatabase() {
@@ -134,6 +136,15 @@ class App {
     
     // Global error handler (must be last)
     this.app.use(errorHandler);
+  }
+
+  setupCleanupInterval() {
+    // Start cleanup interval for expired appointment requests (every 10 minutes)
+    setInterval(() => {
+      appointmentService.cleanupExpiredRequests();
+    }, 10 * 60 * 1000);
+
+    console.log('✅ [APP] Appointment cleanup service started');
   }
 
   getApp() {

@@ -16,8 +16,12 @@ class ViewingAppointment extends BaseModel {
     return {
       id: 'uuid (primary key)',
       user_id: 'uuid (foreign key to users)',
+      property_id: 'uuid (foreign key to properties)',
       viewing_time_slot_id: 'uuid (foreign key to viewing_time_slots)',
       appointment_date: 'date (required)',
+      start_time: 'time',
+      end_time: 'time',
+      status: 'varchar(50)',
       created_at: 'timestamptz'
     };
   }
@@ -132,28 +136,32 @@ class ViewingAppointment extends BaseModel {
    * @returns {Object} - Created appointment with details
    */
   async createAppointment(appointmentData) {
-    const { user_id, viewing_time_slot_id, appointment_date } = appointmentData;
+    const { user_id, property_id, appointment_date, start_time, end_time } = appointmentData;
 
     // Validate required fields
-    if (!user_id || !viewing_time_slot_id || !appointment_date) {
-      throw new Error('Missing required fields: user_id, viewing_time_slot_id, appointment_date');
+    if (!user_id || !property_id || !appointment_date || !start_time || !end_time) {
+      throw new Error('Missing required fields for appointment creation.');
     }
 
-    // Check if slot is available
-    const isAvailable = await this.isSlotAvailable(viewing_time_slot_id, appointment_date);
-    if (!isAvailable) {
-      throw new Error('Time slot is not available for the selected date');
-    }
+    // Availability should be checked in the service layer before calling this function.
 
-    // Check if user already has an appointment for this date and time
-    const existingAppointment = await this.findOne({
-      user_id,
-      viewing_time_slot_id,
-      appointment_date
-    });
+    // Check if user already has an appointment for this property at this time
+    const { data: existingAppointment, error: findError } = await this.db
+      .from('viewing_appointments')
+      .select('id')
+      .eq('user_id', user_id)
+      .eq('property_id', property_id)
+      .eq('appointment_date', appointment_date)
+      .lt('start_time', end_time)
+      .gt('end_time', start_time)
+      .single();
+
+    if (findError && findError.code !== 'PGRST116') { // Ignore "No rows found"
+      throw findError;
+    }
 
     if (existingAppointment) {
-      throw new Error('User already has an appointment for this time slot');
+      throw new Error('User already has an overlapping appointment for this property.');
     }
 
     const appointment = await this.create(appointmentData);

@@ -15,24 +15,28 @@ class District extends BaseModel {
   static get schema() {
     return {
       id: 'uuid (primary key)',
-      district: 'text',
-      country_id: 'uuid (foreign key to countries)',
+      district: 'varchar(255) (required)',
+      city_id: 'uuid (foreign key to cities)',
       created_at: 'timestamptz'
     };
   }
 
   /**
-   * Find district by name
-   * @param {string} district - District name
-   * @param {string} countryId - Optional country ID filter
+   * Find district by name within a specific city
+   * @param {string} districtName - District name
+   * @param {string} cityId - The ID of the city to search within
+   * @param {boolean} useAdmin - Whether to use admin client
    * @returns {Object|null} - District record
    */
-  async findByName(district, countryId = null) {
-    const filters = { district };
-    if (countryId) {
-      filters.country_id = countryId;
-    }
-    return await this.findOne(filters);
+  async findByName(districtName, cityId, useAdmin = false) {
+    if (!cityId) return null;
+    if (useAdmin) this.useAdminDb();
+    const result = await this.findOne({ 
+      district: districtName,
+      city_id: cityId 
+    });
+    if (useAdmin) this.useUserDb();
+    return result;
   }
 
   /**
@@ -79,22 +83,27 @@ class District extends BaseModel {
 
   /**
    * Create district if it doesn't exist
-   * @param {string} district - District name
-   * @param {string} countryId - Country ID
+   * @param {string} districtName - District name
+   * @param {string} cityId - The ID of the city it belongs to
    * @param {boolean} useAdmin - Whether to use admin client
    * @returns {Object} - District record
    */
-  async createIfNotExists(district, countryId, useAdmin = false) {
-    if (useAdmin) this.useAdminDb();
-    
-    const existing = await this.findByName(district, countryId);
+  async createIfNotExists(districtName, cityId, useAdmin = false) {
+    if (!cityId) {
+      throw new Error("Cannot create a district without a city_id.");
+    }
+    // Use admin db for checking existing to bypass RLS
+    const existing = await this.findByName(districtName, cityId, true);
     if (existing) {
-      if (useAdmin) this.useUserDb();
       return existing;
     }
-    const created = await this.create({ district, country_id: countryId });
     
-    if (useAdmin) this.useUserDb();
+    this.useAdminDb();
+    const created = await this.create({ 
+      district: districtName,
+      city_id: cityId
+    });
+    this.useUserDb(); // Reset to user db
     return created;
   }
 

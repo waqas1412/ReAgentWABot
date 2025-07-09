@@ -26,7 +26,7 @@ class PropertyManagementService {
         .from('properties')
         .select(`
           *,
-          districts:district_id(district, country_id, countries:country_id(country)),
+          districts:district_id(district, cities:city_id(city, countries:country_id(country))),
           apartment_types:type_id(type)
         `)
         .eq('owner_id', user.id)
@@ -289,7 +289,7 @@ class PropertyManagementService {
         .eq('owner_id', user.id) // Ensure user owns the property
         .select(`
           *,
-          districts:district_id(district, country_id, countries:country_id(country)),
+          districts:district_id(district, cities:city_id(city, countries:country_id(country))),
           apartment_types:type_id(type)
         `)
         .single();

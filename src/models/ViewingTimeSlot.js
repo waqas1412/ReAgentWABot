@@ -156,24 +156,33 @@ class ViewingTimeSlot extends BaseModel {
   }
 
   /**
-   * Check if time slot is available on a specific date
+   * Check if time slot is available on a specific date for a specific property
    * @param {string} timeSlotId - Time slot ID
    * @param {string} date - Date in YYYY-MM-DD format
+   * @param {string} propertyId - The ID of the property to check availability for
    * @returns {boolean} - True if available
    */
-  async isSlotAvailable(timeSlotId, date) {
-    const { data, error } = await this.db
+  async isSlotAvailable(timeSlotId, date, propertyId) {
+    let query = this.db
       .from('viewing_appointments')
-      .select('id')
+      .select('id', { count: 'exact' })
       .eq('viewing_time_slot_id', timeSlotId)
-      .eq('appointment_date', date)
-      .limit(1);
+      .eq('appointment_date', date);
+
+    // If a propertyId is provided, check for conflicts on that specific property
+    if (propertyId) {
+      query = query.eq('property_id', propertyId);
+    }
+    
+    const { error, count } = await query;
 
     if (error) {
+      console.error('Error checking slot availability:', error);
       throw error;
     }
 
-    return !data || data.length === 0;
+    // The slot is available if there are 0 appointments matching the criteria.
+    return count === 0;
   }
 
   /**

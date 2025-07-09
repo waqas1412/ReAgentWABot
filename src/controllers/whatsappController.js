@@ -196,6 +196,9 @@ class WhatsAppController {
     try {
       console.log(`Processing message from ${from} (${profileName}): ${body}`);
 
+      // Get or create user
+      const user = await databaseService.getOrCreateUserFromWhatsApp(from, profileName);
+      
       // Handle media messages
       if (numMedia > 0) {
         console.log(`Received media: ${mediaContentType} - ${mediaUrl}`);
@@ -222,10 +225,8 @@ class WhatsAppController {
         };
       }
 
-      // Get or create user
-      const user = await databaseService.getOrCreateUserFromWhatsApp(from, profileName);
-      
-      // Use the enhanced conversation service to process the message
+      // The controller is now simplified. It just passes the message and user
+      // to the conversation service, which holds all the complex logic.
       const responseMessages = await conversationService.processMessage(body, user);
       
       // Join multiple messages if needed (for WhatsApp we'll send the first one via TwiML)
