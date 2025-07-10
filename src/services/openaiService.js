@@ -478,9 +478,9 @@ Return JSON:
     "built_year": {"min": number, "max": number},
     "available_from": "YYYY-MM-DD",
     "location": {
-      "country": "string",
-      "city": "string", 
-      "district": "string",
+      "country": "string or null",
+      "city": "string or null", 
+      "district": "string or null",
       "area_description": "downtown|center|suburban|etc"
     },
     "amenities": {
@@ -513,17 +513,17 @@ ENHANCED INTELLIGENCE WITH AMBIGUITY AWARENESS:
 - "new construction" -> built_year: {"min": <current_year - 1>}
 - "available now" -> available_from: <today's_date>
 
+INTELLIGENT DEFAULTS:
+- If a location term is provided (e.g., "Rato", "Lisbon"), aggressively attempt to classify it as a district, city, or country. Prioritize district, then city.
+- If no location is mentioned, do not default country or city. Set them to null.
+- Status: "active"
+- DO NOT guess location from standalone numbers
+
 SMART INTERPRETATION RULES:
 1. If number has currency symbol or price words → price
 2. If number with clear location context → location
 3. If number with area units → area
 4. If standalone number without context → flag as potentially ambiguous
-
-INTELLIGENT DEFAULTS:
-- Country: "Portugal" (primary market)
-- City: "Lisbon" (major market center) - ONLY if other location context exists
-- Status: "active" (new listings are active)
-- DO NOT guess location from standalone numbers
 
 Your parsing should enable precise automation while avoiding incorrect assumptions.`;
 

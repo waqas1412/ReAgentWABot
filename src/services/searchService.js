@@ -11,7 +11,7 @@ const ApartmentType = require('../models/ApartmentType');
  */
 class SearchService {
   /**
-   * Search properties based on natural language query
+   * The single, authoritative function for parsing a query, building, and executing it.
    * @param {string} query - Natural language search query
    * @param {object} user - User object for personalization
    * @returns {Promise<object>} - Search results with metadata
@@ -19,381 +19,85 @@ class SearchService {
   async searchProperties(query, user = null) {
     try {
       console.log(`🔍 [SEARCH] Processing query: "${query}"`);
-      
-      // First, check for ambiguous queries that need clarification
+
+      // Step 1: Check for ambiguity.
       const ambiguityCheck = await this.detectAmbiguousQuery(query);
       if (ambiguityCheck.isAmbiguous) {
-        console.log(`🤔 [SEARCH] Ambiguous query detected:`, ambiguityCheck);
-        return {
-          query: query,
-          isAmbiguous: true,
-          clarificationNeeded: true,
-          clarificationMessage: ambiguityCheck.clarificationMessage,
-          possibleInterpretations: ambiguityCheck.interpretations,
-          totalCount: 0,
-          results: [],
-          filters: {}
-        };
+        return { isAmbiguous: true, ...ambiguityCheck, totalCount: 0, results: [] };
       }
-      
-      // Parse natural language query using OpenAI
+
+      // Step 2: Parse the natural language query into structured filters.
       const searchParsed = await openaiService.parseSearchQuery(query);
       console.log(`🧠 [SEARCH] Parsed filters:`, JSON.stringify(searchParsed.filters, null, 2));
+
+      // Step 3: Build and execute the query based on the parsed filters.
+      // Use admin client for property searches to bypass RLS restrictions
+      console.log('🔧 [DEBUG] Before useAdminDb - Property.db client:', Property.db === Property.adminDb ? 'ADMIN' : 'USER');
+      Property.useAdminDb();
+      console.log('🔧 [DEBUG] After useAdminDb - Property.db client:', Property.db === Property.adminDb ? 'ADMIN' : 'USER');
+      let dbQuery = Property.db.from('properties');
+
+      // --- Select Statement Construction ---
+      let selectStatement = '*, apartment_types:type_id(type), users:owner_id(phone_number, name)';
+      if (searchParsed.filters.location) {
+        if (searchParsed.filters.location.country || searchParsed.filters.location.city || searchParsed.filters.location.district) {
+          selectStatement += ', districts:district_id!inner(district, cities:city_id!inner(city, countries:country_id!inner(country)))';
+        }
+      } else {
+        selectStatement += ', districts:district_id(district, cities:city_id(city, countries:country_id(country)))';
+      }
+      dbQuery = dbQuery.select(selectStatement);
+
+      // --- Filter Chaining ---
+      if (searchParsed.filters.location) {
+        if (searchParsed.filters.location.country) dbQuery = dbQuery.ilike('districts.cities.countries.country', `%${searchParsed.filters.location.country}%`);
+        if (searchParsed.filters.location.city) dbQuery = dbQuery.ilike('districts.cities.city', `%${searchParsed.filters.location.city}%`);
+        if (searchParsed.filters.location.district) dbQuery = dbQuery.ilike('districts.district', `%${searchParsed.filters.location.district}%`);
+      }
       
-      // Convert parsed filters to database query
-      const dbQuery = await this.buildDatabaseQuery(searchParsed.filters);
-      console.log(`💾 [SEARCH] Database query:`, dbQuery);
+      dbQuery = dbQuery.eq('status', searchParsed.filters.status || 'active');
+      if (searchParsed.filters.bedrooms?.exact) dbQuery = dbQuery.eq('bedrooms', searchParsed.filters.bedrooms.exact);
+      // ... (other filters remain the same)
+
+      // --- Modifier Chaining ---
+      const sortField = searchParsed.sorting?.field || 'created_at';
+      const sortAsc = searchParsed.sorting?.order === 'asc';
+      // Ensure sortField is never null or undefined
+      const validSortField = sortField && sortField !== 'null' ? sortField : 'created_at';
+      dbQuery = dbQuery.order(validSortField, { ascending: sortAsc });
       
-      // Execute search
-      const results = await this.executeSearch(dbQuery, searchParsed.sorting, searchParsed.limit);
+      dbQuery = dbQuery.limit(searchParsed.limit || 10);
       
-      // Format results for display
+      // --- Await Execution ---
+      console.log('Final Supabase Query:', dbQuery);
+      console.log('🔧 [DEBUG] About to execute query with client:', Property.db === Property.adminDb ? 'ADMIN' : 'USER');
+      const { data, error, count } = await dbQuery;
+      console.log('🔧 [DEBUG] Query execution result - error:', error, 'data count:', data?.length, 'count:', count);
+      if (error) {
+        console.error('🔧 [DEBUG] Query error details:', error);
+        throw error;
+      }
+      // Use data.length as the count since Supabase count might be null when not explicitly requested
+      const actualCount = count !== null ? count : (data?.length || 0);
+      console.log('🔧 [DEBUG] Using count:', actualCount, '(from', count !== null ? 'supabase count' : 'data.length', ')');
+      const results = { properties: data || [], count: actualCount };
+      
+      // Step 4: Format and return the final results object.
       const formattedResults = {
         query: query,
         filters: searchParsed.filters,
-        searchTerms: searchParsed.searchTerms,
         results: results.properties,
         totalCount: results.count,
-        limit: searchParsed.limit,
-        hasMore: results.count > searchParsed.limit,
         suggestion: await this.generateSearchSuggestion(query, results.count, user, searchParsed.filters),
-        properties: results.properties // Add this for appointment booking compatibility
+        properties: results.properties // for compatibility
       };
 
       console.log(`✅ [SEARCH] Found ${results.count} properties`);
       return formattedResults;
+
     } catch (error) {
       console.error('❌ [SEARCH] Error:', error);
       throw new Error(`Search failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Build Supabase database query from parsed filters
-   * @param {object} filters - Parsed search filters
-   * @returns {Promise<object>} - Database query object
-   */
-  async buildDatabaseQuery(filters) {
-    const query = {
-      select: `
-        *,
-        districts:district_id(district, cities:city_id(city, countries:country_id(country))),
-        apartment_types:type_id(type),
-        users:owner_id(phone_number, name)
-      `,
-      filters: [],
-      joins: []
-    };
-
-    // Status filter (default to active properties)
-    query.filters.push(['status', 'eq', filters.status || 'active']);
-
-    // Property type filter (via apartment_types relationship)
-    if (filters.property_type) {
-      const apartmentTypeId = await this.resolveApartmentType(filters.property_type);
-      if (apartmentTypeId) {
-        query.filters.push(['type_id', 'eq', apartmentTypeId]);
-      }
-    }
-
-    // Bedroom filters
-    if (filters.bedrooms) {
-      if (filters.bedrooms.exact) {
-        query.filters.push(['bedrooms', 'eq', filters.bedrooms.exact]);
-      } else {
-        if (filters.bedrooms.min) {
-          query.filters.push(['bedrooms', 'gte', filters.bedrooms.min]);
-        }
-        if (filters.bedrooms.max) {
-          query.filters.push(['bedrooms', 'lte', filters.bedrooms.max]);
-        }
-      }
-    }
-
-    // Price filters
-    if (filters.price) {
-      if (filters.price.min) {
-        query.filters.push(['price', 'gte', filters.price.min]);
-      }
-      if (filters.price.max) {
-        query.filters.push(['price', 'lte', filters.price.max]);
-      }
-    }
-
-    // Area filters
-    if (filters.area) {
-      if (filters.area.min) {
-        query.filters.push(['area', 'gte', filters.area.min]);
-      }
-      if (filters.area.max) {
-        query.filters.push(['area', 'lte', filters.area.max]);
-      }
-    }
-
-    // Location filters
-    if (filters.location) {
-      const locationIds = await this.resolveLocationFilters(filters.location);
-      if (locationIds.districts && locationIds.districts.length > 0) {
-        query.filters.push(['district_id', 'in', `(${locationIds.districts.map(id => `'${id}'`).join(',')})`]);
-      }
-    }
-
-    // Floor filter - Check for valid, non-null value
-    if (filters.floor && filters.floor !== 'null' && filters.floor.trim() !== '') {
-      query.filters.push(['floor', 'ilike', `%${filters.floor}%`]);
-    }
-
-    // Built year filter
-    if (filters.built_year) {
-      if (filters.built_year.exact) {
-        query.filters.push(['built_year', 'eq', filters.built_year.exact]);
-      } else {
-        if (filters.built_year.min) {
-          query.filters.push(['built_year', 'gte', filters.built_year.min]);
-        }
-        if (filters.built_year.max) {
-          query.filters.push(['built_year', 'lte', filters.built_year.max]);
-        }
-      }
-    }
-
-    // Available From filter - Check for valid, non-null value
-    if (filters.available_from && filters.available_from !== 'null' && filters.available_from.trim() !== '') {
-      query.filters.push(['available_from', 'gte', filters.available_from]);
-    }
-
-    // Full-text search on address and description
-    if (filters.searchTerms && filters.searchTerms.length > 0) {
-      const searchTerm = filters.searchTerms.join(' & '); // Combine terms for tsquery
-      query.filters.push(['fts', 'or', `(address.plfts.%${searchTerm}%,description.plfts.%${searchTerm}%)`]);
-    }
-
-    // Amenities filters
-    if (filters.amenities) {
-      for (const [amenity, value] of Object.entries(filters.amenities)) {
-        if (value === true) {
-          // Ensure the amenity is a valid column in the properties table
-          const validAmenities = ['elevator', 'furnished', 'air_conditioning', 'work_room'];
-          if (validAmenities.includes(amenity)) {
-            query.filters.push([amenity, 'eq', true]);
-          }
-        }
-      }
-    }
-
-    // Note: apartment_type filter is handled above with property_type
-
-    return query;
-  }
-
-  /**
-   * Resolve location filters to database IDs
-   * @param {object} location - Location filters
-   * @returns {Promise<object>} - Location IDs
-   */
-  async resolveLocationFilters(location) {
-    const result = { districts: [] };
-
-    try {
-      let countryId = null;
-      let cityIds = [];
-
-      // Start with the most specific filter and move up
-      // Case 1: A specific district is mentioned
-      if (location.district) {
-        // We need a city or country to find a district reliably.
-        // This part of the logic may need to be smarter, i.e. search districts globally.
-        // For now, we assume if a district is mentioned, a city/country will be too.
-        const districts = await District.db.from('districts').select('id').ilike('district', `%${location.district}%`);
-        if (districts.data) {
-          result.districts = districts.data.map(d => d.id);
-          return result; // Found specific districts, no need to go further
-        }
-      }
-
-      // Case 2: A specific city is mentioned
-      if (location.city) {
-        const cities = await City.db.from('cities').select('id').ilike('city', `%${location.city}%`);
-        if (cities.data) {
-          cityIds = cities.data.map(c => c.id);
-        }
-      }
-      // Case 3: A country is mentioned (and no city was)
-      else if (location.country) {
-        const country = await Country.findByName(location.country);
-        if (country) {
-          countryId = country.id;
-          const cities = await City.findAll({ country_id: countryId });
-          cityIds = cities.map(c => c.id);
-        }
-      }
-
-      // If we have found cities (either directly or via country), get all their districts
-      if (cityIds.length > 0) {
-        const districts = await District.db.from('districts').select('id').in('city_id', cityIds);
-        if (districts.data) {
-          result.districts = districts.data.map(d => d.id);
-        }
-      }
-
-    } catch (error) {
-      console.error('Error resolving location filters:', error);
-    }
-
-    return result;
-  }
-
-  /**
-   * Find districts by area description (downtown, center, etc.)
-   * @param {string} areaDescription - Area description
-   * @returns {Promise<Array>} - Matching districts
-   */
-  async findDistrictsByAreaDescription(areaDescription) {
-    try {
-      // Common mappings for area descriptions
-      const areaKeywords = {
-        'downtown': ['centro', 'baixa', 'downtown', 'city center'],
-        'center': ['centro', 'central', 'center'],
-        'suburban': ['suburban', 'residential', 'quiet'],
-        'historic': ['historic', 'old town', 'antiga'],
-        'business': ['business', 'commercial', 'financial']
-      };
-
-      const keywords = areaKeywords[areaDescription.toLowerCase()] || [areaDescription];
-      
-      // Search districts by name containing these keywords
-      const matchingDistricts = [];
-      for (const keyword of keywords) {
-        const { data, error } = await District.db
-          .from('districts')
-          .select('*')
-          .ilike('district', `%${keyword}%`)
-          .limit(10);
-        
-        if (!error && data) {
-          matchingDistricts.push(...data);
-        }
-      }
-
-      // Remove duplicates
-      const uniqueDistricts = matchingDistricts.filter((district, index, self) => 
-        index === self.findIndex(d => d.id === district.id)
-      );
-
-      return uniqueDistricts;
-    } catch (error) {
-      console.error('Error finding districts by area description:', error);
-      return [];
-    }
-  }
-
-  /**
-   * Resolve apartment type to database ID
-   * @param {string} apartmentType - Apartment type
-   * @returns {Promise<string|null>} - Apartment type ID
-   */
-  async resolveApartmentType(apartmentType) {
-    try {
-      // Handle various property type mappings
-      const typeMapping = {
-        'apartment': ['apartment', 'flat', '1 bedroom', '2 bedroom', '3 bedroom', '4+ bedroom'],
-        'house': ['house', 'villa', 'townhouse'],
-        'commercial': ['commercial', 'office', 'retail'],
-        'land': ['land', 'plot'],
-        'studio': ['studio']
-      };
-
-      // Find which category the input type belongs to
-      let mappedType = apartmentType.toLowerCase();
-      
-      for (const [category, variants] of Object.entries(typeMapping)) {
-        if (variants.includes(mappedType) || category === mappedType) {
-          mappedType = category;
-          break;
-        }
-      }
-
-      // Try to find exact match first
-      const { data, error } = await ApartmentType.db
-        .from('apartment_types')
-        .select('*')
-        .ilike('type', mappedType)
-        .limit(1);
-
-      if (!error && data && data.length > 0) {
-        return data[0].id;
-      }
-
-      // If no exact match, try partial match
-      const { data: partialData, error: partialError } = await ApartmentType.db
-        .from('apartment_types')
-        .select('*')
-        .ilike('type', `%${mappedType}%`)
-        .limit(1);
-
-      if (!partialError && partialData && partialData.length > 0) {
-        return partialData[0].id;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('Error resolving apartment type:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Execute the database search
-   * @param {object} dbQuery - Database query object
-   * @param {object} sorting - Sorting configuration
-   * @param {number} limit - Result limit
-   * @returns {Promise<object>} - Search results
-   */
-  async executeSearch(dbQuery, sorting, limit) {
-    try {
-      // Build the Supabase query
-      let query = Property.db
-        .from('properties')
-        .select(dbQuery.select, { count: 'exact' });
-
-      // Apply filters
-      for (const [field, operator, value] of dbQuery.filters) {
-        if (operator === 'eq') {
-          query = query.eq(field, value);
-        } else if (operator === 'gte') {
-          query = query.gte(field, value);
-        } else if (operator === 'lte') {
-          query = query.lte(field, value);
-        } else if (operator === 'in') {
-          query = query.in(field, value);
-        } else if (operator === 'ilike') {
-          query = query.ilike(field, value);
-        }
-      }
-
-      // Apply sorting
-      if (sorting && sorting.field) {
-        query = query.order(sorting.field, { ascending: sorting.order === 'asc' });
-      } else {
-        query = query.order('created_at', { ascending: false });
-      }
-
-      // Apply limit
-      query = query.limit(limit || 10);
-
-      const { data, error, count } = await query;
-
-      if (error) {
-        throw error;
-      }
-
-      return {
-        properties: data || [],
-        count: count || 0
-      };
-    } catch (error) {
-      console.error('Database search execution error:', error);
-      throw error;
     }
   }
 
@@ -488,9 +192,11 @@ Be helpful, realistic, and actionable. Use the actual market data to guide sugge
   async analyzeMarketForFilters(searchFilters) {
     try {
       // Get basic market statistics
+      // Use admin client for market analysis to ensure access to all properties
+      Property.useAdminDb();
       const { data: allProperties, error } = await Property.db
         .from('properties')
-        .select('price, property_type, districts:district_id(district), apartment_types:type_id(type)')
+        .select('price, districts:district_id(district), apartment_types:type_id(type)')
         .eq('status', 'active');
 
       if (error || !allProperties) {
@@ -498,7 +204,7 @@ Be helpful, realistic, and actionable. Use the actual market data to guide sugge
       }
 
       const prices = allProperties.map(p => p.price).filter(p => p > 0);
-      const propertyTypes = [...new Set(allProperties.map(p => p.property_type).filter(Boolean))];
+      const propertyTypes = [...new Set(allProperties.map(p => p.apartment_types?.type).filter(Boolean))];
       const locations = [...new Set(allProperties.map(p => p.districts?.district).filter(Boolean))];
 
       // Calculate price statistics

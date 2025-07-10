@@ -17,7 +17,12 @@ const CONVERSATION_STATE = {
   AWAITING_ROLE: 'awaiting_role_selection',
   AWAITING_DELETION_CONFIRMATION: 'awaiting_deletion_confirmation',
   AWAITING_AVAILABILITY_PROPERTY_SELECTION: 'awaiting_availability_property_selection',
-  AWAITING_AVAILABILITY_TEXT: 'awaiting_availability_text'
+  AWAITING_AVAILABILITY_TEXT: 'awaiting_availability_text',
+  // Appointment booking states
+  AWAITING_SLOT_SELECTION: 'awaiting_appointment_slot_selection',
+  AWAITING_TIME_PREFERENCES: 'awaiting_buyer_time_preferences',
+  AWAITING_APPOINTMENT_CONFIRMATION: 'awaiting_appointment_confirmation',
+  APPOINTMENT_COORDINATING: 'appointment_coordinating'
 };
 
 class ConversationService {
@@ -56,19 +61,19 @@ class ConversationService {
   async processMessage(message, user) {
     try {
       console.log(`🤖 [CONVERSATION] Processing message from ${user.phone_number}: "${message}"`);
-      const conversationState = this.getConversationState(user.phone_number);
-
+        const conversationState = this.getConversationState(user.phone_number);
+        
       // If the user has no role and we are not already asking for it, start the onboarding flow.
       // This is the new, correct entry point for the "Handshake."
       if (!user.role_id && conversationState.state !== CONVERSATION_STATE.AWAITING_ROLE) {
         return await this.startNewUserOnboarding(user, message);
-      }
-
+        }
+        
       // Handle the role selection from the onboarding flow
       if (conversationState.state === CONVERSATION_STATE.AWAITING_ROLE) {
         return await this.handleRoleSelection(message, user, conversationState);
-      }
-
+          }
+          
       // Handle property deletion confirmation
       if (conversationState.state === CONVERSATION_STATE.AWAITING_DELETION_CONFIRMATION) {
         return await this.handleDeletionResponse(message, user, conversationState);
@@ -82,12 +87,26 @@ class ConversationService {
         return await this.handleAvailabilityResponse(message, user, conversationState);
       }
 
+      // Handle appointment booking states
+      if (conversationState.state === CONVERSATION_STATE.AWAITING_SLOT_SELECTION) {
+        return await this.handleSlotSelection(message, user, conversationState);
+      }
+      if (conversationState.state === CONVERSATION_STATE.AWAITING_TIME_PREFERENCES) {
+        return await this.handleTimePreferences(message, user, conversationState);
+      }
+      if (conversationState.state === CONVERSATION_STATE.AWAITING_APPOINTMENT_CONFIRMATION) {
+        return await this.handleAppointmentConfirmation(message, user, conversationState);
+      }
+      if (conversationState.state === CONVERSATION_STATE.APPOINTMENT_COORDINATING) {
+        return await this.handleAppointmentCoordination(message, user, conversationState);
+          }
+
       // Check for owner responses to appointment requests before anything else
       const ownerResponse = await this.handleOwnerAppointmentResponse(message, user);
       if (ownerResponse) {
         return ownerResponse;
       }
-
+      
       // For existing users, add a personalized greeting if they send a simple "Hi"
       const greetingResponse = this.handleGreeting(message, user);
       if (greetingResponse) {
@@ -98,72 +117,35 @@ class ConversationService {
       // Check for direct appointment requests
       const appointmentCheck = await appointmentService.isAppointmentRequest(message);
       if (appointmentCheck.isAppointmentRequest) {
-        console.log(`📅 [CONVERSATION] Detected appointment request with confidence: ${appointmentCheck.confidence}`);
-        console.log(`📅 [CONVERSATION] Intent details:`, appointmentCheck);
+        console.log(`📅 [CONVERSATION] Appointment request detected with confidence: ${appointmentCheck.confidence}`);
         
+        // CRITICAL FIX: Check if this is an owner/agent providing availability
+        if (user.user_roles?.role === 'owner' || user.user_roles?.role === 'agent') {
+          console.log(`🏠 [CONVERSATION] Owner/agent providing availability: "${message}"`);
+          return await this.handleOwnerAvailabilityResponse(message, user);
+        }
+        
+        // This is a high-level intent. Let the contextual handler manage it
+        // to see if it applies to a recent search.
+        const contextualResult = await this.handleContextualRequest(message, user);
+        if (contextualResult) return contextualResult;
+        
+        // If contextual handler didn't handle it, provide intelligent guidance
         const conversationState = this.getConversationState(user.phone_number);
+        const hasRecentSearch = conversationState.lastSearchResults?.results?.length > 0;
         
-        // Check if they specified a property number (e.g., "book viewing for property 3")
-        const propertyNumber = this.extractPropertyNumberFromViewingRequest(message);
-        if (propertyNumber) {
-          // Use consistent property array - could be in 'results' or 'properties'
-          const properties = conversationState.lastSearchResults?.results || conversationState.lastSearchResults?.properties;
-          if (properties && properties.length > 0) {
-            const property = properties[propertyNumber - 1];
-            if (property) {
-              console.log(`📅 [CONVERSATION] Booking viewing for specific property ${propertyNumber}`);
-              return await appointmentService.handleViewingInterest(message, user, property.id);
-            } else {
-              return [`❌ I don't see a property ${propertyNumber} in your recent search. You have ${properties.length} properties to choose from.`];
-            }
-          }
-        }
-        
-        // Check for contextual references like "this property" or just "this"
-        const hasContextualWords = /\b(this|that|it)\b/i.test(message);
-        if (hasContextualWords || appointmentCheck.hasContextualReference) {
-          // Check if they just viewed details of a specific property
-          if (conversationState.lastViewedProperty) {
-            console.log(`📅 [CONVERSATION] Contextual reference detected, booking for last viewed property: ${conversationState.lastViewedProperty.id}`);
-            return await appointmentService.handleViewingInterest(message, user, conversationState.lastViewedProperty.id);
-          }
-          
-          // Fallback to single property in search results
-          const properties = conversationState.lastSearchResults?.results || conversationState.lastSearchResults?.properties;
-          if (properties && properties.length === 1) {
-            const property = properties[0];
-            console.log(`📅 [CONVERSATION] Single property in search results, booking for: ${property.id}`);
-            return await appointmentService.handleViewingInterest(message, user, property.id);
-          } else if (properties && properties.length > 1) {
-            return this.askWhichPropertyToView(properties);
-          }
-        }
-        
-        // No specific property context - ask which one
-        const properties = conversationState.lastSearchResults?.results || conversationState.lastSearchResults?.properties;
-        if (properties && properties.length > 0) {
-          if (properties.length === 1) {
-            const property = properties[0];
-            return await appointmentService.handleViewingInterest(message, user, property.id);
+        if (hasRecentSearch) {
+          return [`🤔 I can see you're interested in booking a viewing! \n\n💡 To help you book an appointment, please be more specific:\n• "I want to book property 1"\n• "I'm interested in viewing the first property"\n• "Book viewing for the apartment in [location]"\n\n📋 Or say "show me properties again" to see your search results.`];
           } else {
-            return this.askWhichPropertyToView(properties);
-          }
-        } else {
-          return [`📅 I'd love to help you schedule a viewing! Please first search for properties you're interested in, then I can help you book an appointment.`];
+          return [`🏠 I'd love to help you book a property viewing!\n\n🔍 First, let me help you find properties. Try searching like:\n• "Show me 2-bedroom apartments in Lisbon"\n• "Properties under €2000 in Porto"\n• "Houses for sale in Cascais"\n\n💡 Once you find something you like, I can arrange the viewing!`];
         }
       }
 
-      // Check for context-dependent requests (property details, contact info)
+      // Check for other context-dependent requests (property details, etc.)
       const contextRequest = await this.parseContextRequest(message, user);
-      if (contextRequest.isPropertyRequest) {
-        return await this.handleContextRequest(message, user, contextRequest);
-      }
-      
-      // If context parser detected search refinement, treat as search
-      if (contextRequest.isSearchRefinement) {
-        console.log(`🔍 [CONVERSATION] Search refinement detected: "${message}"`);
-        const searchQuery = contextRequest.searchTerms || message;
-        return await this.handleSearch(searchQuery, user);
+      if (contextRequest.isPropertyRequest || contextRequest.isPropertyInterest || contextRequest.isSearchRefinement) {
+        const contextualResult = await this.handleContextualRequest(message, user, contextRequest);
+        if (contextualResult) return contextualResult;
       }
 
       // Step 1: Classify the intent using OpenAI
@@ -366,7 +348,15 @@ class ConversationService {
       if (searchResults.totalCount > 0) {
         const followUp = this.generateIntelligentFollowUp(searchResults, message, user);
         formattedMessages.push(followUp);
-        formattedMessages.push("Would you like to narrow down these results? You can change the price, add a feature, or specify a different area.");
+        
+        // Add proactive appointment booking suggestions
+        if (searchResults.totalCount === 1) {
+          formattedMessages.push("💡 To book a viewing for this property, just say:\n• \"I am interested in this\"\n• \"Book a viewing\"\n• \"I want to see this property\"");
+        } else if (searchResults.totalCount <= 5) {
+          formattedMessages.push("💡 To book a viewing, say:\n• \"I am interested in property 1\"\n• \"Book viewing for property 2\"\n• \"I want to see the first apartment\"");
+        } else {
+          formattedMessages.push("Would you like to narrow down these results? You can change the price, add a feature, or specify a different area.");
+        }
       } else {
         // Use AI to provide intelligent no-results response
         const intelligentSuggestions = await this.generateIntelligentNoResultsResponse(searchResults, message, user);
@@ -542,7 +532,7 @@ class ConversationService {
   /**
    * Handle unclear intents with AI-powered suggestions
    * @param {string} message - Original message
-   * @param {object} user - User object  
+   * @param {object} user - User object
    * @param {object} intent - Intent classification
    * @returns {Promise<Array>} - Intelligent help messages
    */
@@ -847,7 +837,7 @@ IMPORTANT: Return ONLY plain text - no JSON, no markdown. Keep it friendly and u
       const conversationState = this.getConversationState(user.phone_number);
       const hasRecentSearch = conversationState.lastSearchResults?.results?.length > 0;
       const lastViewedProperty = conversationState.lastViewedProperty;
-      const hasLastSearchQuery = conversationState.lastSearchQuery;
+      const hasLastSearchQuery = conversationState.lastQuery;
       
       const systemPrompt = `You are an intelligent context analyzer for a real estate assistant. Analyze the user's message to determine their intent.
 
@@ -857,32 +847,51 @@ CONVERSATION CONTEXT:
 - Last search query: "${hasLastSearchQuery || 'none'}"
 
 INTELLIGENT ANALYSIS RULES:
-1. PRICE CORRECTIONS are common and should trigger new searches:
+1. CONTEXTUAL REFERENCES to recent properties should be recognized:
+   - "i am interested in this" → PROPERTY INTEREST (if recent search exists)
+   - "i want to see this" → PROPERTY INTEREST (if recent search exists)
+   - "book a viewing for this" → PROPERTY INTEREST (if recent search exists)
+   - "contact details for this" → PROPERTY DETAILS (if recent search exists)
+   - "this property" → PROPERTY INTEREST (if recent search exists)
+   - "i am interested in number 5" → PROPERTY INTEREST for property #5
+   - "i am interested in property 3" → PROPERTY INTEREST for property #3
+   - "book viewing for number 2" → PROPERTY INTEREST for property #2
+   - "i want to see property 1" → PROPERTY INTEREST for property #1
+
+2. PRICE CORRECTIONS are common and should trigger new searches:
    - "oh i mean 3000" → NEW SEARCH for €3000 properties
    - "budget" → NEW SEARCH for budget properties  
    - "3000" (after price discussion) → NEW SEARCH for €3000 properties
    - "actually 2500" → NEW SEARCH for €2500 properties
 
-2. PROPERTY DETAIL REQUESTS need specific property references:
+3. PROPERTY DETAIL REQUESTS need specific property references:
    - "details of property 1" → PROPERTY DETAILS for #1
    - "tell me more about 5" → PROPERTY DETAILS for #5
    - "i want info on property 3" → PROPERTY DETAILS for #3
 
-3. SEARCH REFINEMENTS should trigger new searches:
+4. SEARCH REFINEMENTS should trigger new searches:
    - "only above 4000" → NEW SEARCH with price filter
    - "properties above price 4000" → NEW SEARCH with price filter
    - "in lisbon" → NEW SEARCH with location filter
 
 Return JSON:
 {
-  "intent": "property_details|search_refinement|other",
+  "intent": "property_details|property_interest|search_refinement|other",
   "propertyNumber": number or null,
   "isSearchRefinement": boolean,
+  "isPropertyInterest": boolean,
   "searchTerms": "extracted search terms if search refinement",
   "confidence": 0.0-1.0
 }
 
 CRITICAL ANALYSIS RULES:
+- "i am interested in this" = property_interest (contextual reference with recent search)
+- "i want to see this" = property_interest (contextual reference)
+- "book viewing for this" = property_interest (contextual reference)
+- "i am interested in number 5" = property_interest (propertyNumber: 5)
+- "i am interested in property 3" = property_interest (propertyNumber: 3)
+- "book viewing for number 2" = property_interest (propertyNumber: 2)
+- "i want to see property 1" = property_interest (propertyNumber: 1)
 - "oh i mean 3000" = search_refinement (price correction)
 - "budget" = search_refinement (budget search)  
 - "only above 4000" = search_refinement (price filter)
@@ -909,6 +918,7 @@ Message to analyze: "${message}"`;
 
       return {
         isPropertyRequest: result.intent === 'property_details',
+        isPropertyInterest: result.isPropertyInterest || result.intent === 'property_interest',
         propertyNumber: result.propertyNumber,
         isSearchRefinement: result.isSearchRefinement || result.intent === 'search_refinement',
         searchTerms: result.searchTerms,
@@ -918,6 +928,7 @@ Message to analyze: "${message}"`;
       console.error('Error parsing context request:', error);
       return {
         isPropertyRequest: false,
+        isPropertyInterest: false,
         propertyNumber: null,
         isSearchRefinement: false,
         searchTerms: null,
@@ -927,52 +938,140 @@ Message to analyze: "${message}"`;
   }
 
   /**
-   * Handle context-dependent requests
-   * @param {string} message - User's message
-   * @param {object} user - User object
-   * @param {object} contextRequest - Parsed context request
-   * @returns {Promise<Array>} - Response messages
+   * Handles all context-dependent requests, such as "details of property 1"
+   * or "book a viewing for number 2".
+   * @param {string} message The user's message.
+   * @param {object} user The user object.
+   * @param {object} [contextRequest=null] Pre-parsed context, if available.
+   * @returns {Promise<Array|null>} A response if the context can be handled, otherwise null.
    */
-  async handleContextRequest(message, user, contextRequest) {
-    try {
-      console.log(`🔍 [CONVERSATION] Handling context request:`, contextRequest);
+  async handleContextualRequest(message, user, contextRequest = null) {
+    // If we don't have a pre-parsed request, parse it now.
+    if (!contextRequest) {
+      contextRequest = await this.parseContextRequest(message, user);
+    }
+    
+    // If it's a search refinement, use the already-extracted search term.
+    if (contextRequest.isSearchRefinement) {
+      // The context parser has already identified the core search term (e.g., "Rato").
+      // We should use that directly instead of the whole sentence.
+      const searchQuery = contextRequest.searchTerms || message;
+      console.log(`🔍 [CONTEXT] Search refinement detected. Passing search term: "${searchQuery}"`);
+      return await this.handleSearch(searchQuery, user);
+    }
 
-      if (contextRequest.type === 'property_details') {
-        // Get the most recent search from conversation state
+    // Handle property interest (like "i am interested in this" or "i am interested in number 5")
+    if (contextRequest.isPropertyInterest) {
+      console.log(`🎯 [CONTEXT] Property interest detected. Checking recent search results.`);
         const conversationState = this.getConversationState(user.phone_number);
         const lastSearchResults = conversationState.lastSearchResults;
 
-        if (!lastSearchResults || !lastSearchResults.results) {
-          return await this.generateIntelligentNoSearchContextResponse(message, user);
+      if (!lastSearchResults || !lastSearchResults.results || lastSearchResults.results.length === 0) {
+        return ["I don't have any recent search results. Please search for properties first."];
         }
 
-        const propertyIndex = contextRequest.propertyIndex - 1; // Convert to 0-based index
+      // CRITICAL FIX: Check if user specified a property number
+      if (contextRequest.propertyNumber) {
+        console.log(`🎯 [CONTEXT] Specific property number detected: ${contextRequest.propertyNumber}`);
+        const propertyIndex = contextRequest.propertyNumber - 1; // Convert to 0-based index
         const property = lastSearchResults.results[propertyIndex];
 
         if (!property) {
-          return [
-            `🤔 I don't see a property ${contextRequest.propertyIndex} in your recent search.`,
-            `💡 You searched for ${lastSearchResults.results.length} properties. Try: "details of property 1" to "details of property ${lastSearchResults.results.length}"`
-          ];
+          return [`❌ I don't see a property with number ${contextRequest.propertyNumber} in your search results. Please choose a number from 1 to ${lastSearchResults.results.length}.`];
         }
 
-        // Check if this is a viewing request for this specific property
-        const appointmentCheck = await appointmentService.isAppointmentRequest(message);
-        if (appointmentCheck.isAppointmentRequest) {
-          console.log(`📅 [CONVERSATION] Detected viewing request for property ${contextRequest.propertyIndex}`);
-          return await appointmentService.handleViewingInterest(message, user, property.id);
+        console.log(`📅 [CONTEXT] Initiating viewing for property #${contextRequest.propertyNumber}: ${property.address}`);
+        
+        // Set up appointment booking state and delegate to appointment service
+        const appointmentResult = await appointmentService.handleViewingInterest(message, user, property.id);
+        
+        // Check if appointment service is expecting slot selection or time preferences
+        const pendingRequest = appointmentService.pendingRequests.get(user.phone_number);
+        if (pendingRequest) {
+          if (pendingRequest.type === 'slot_selection') {
+            this.setConversationState(user.phone_number, {
+              ...conversationState,
+              state: CONVERSATION_STATE.AWAITING_SLOT_SELECTION,
+              property: property,
+              availableSlots: pendingRequest.availableSlots
+            });
+          } else if (pendingRequest.type === 'preference_collection') {
+            this.setConversationState(user.phone_number, {
+              ...conversationState,
+              state: CONVERSATION_STATE.AWAITING_TIME_PREFERENCES,
+              property: property,
+              originalMessage: message
+            });
+          }
         }
-
-        // Generate detailed property information
-        return await this.generateDetailedPropertyInfo(property, contextRequest.requestType, user);
+        
+        return appointmentResult;
       }
 
-      // Fallback for other context types
-      return await this.generateIntelligentErrorResponse(message, new Error('Unknown context request'), user, 'context_request');
+      // If there's only one property from recent search, use that
+      if (lastSearchResults.results.length === 1) {
+        const property = lastSearchResults.results[0];
+        console.log(`📅 [CONTEXT] Single property from recent search. Initiating viewing for: ${property.address}`);
+        
+        // Set up appointment booking state and delegate to appointment service
+        const appointmentResult = await appointmentService.handleViewingInterest(message, user, property.id);
+        
+        // Check if appointment service is expecting slot selection or time preferences
+        const pendingRequest = appointmentService.pendingRequests.get(user.phone_number);
+        if (pendingRequest) {
+          if (pendingRequest.type === 'slot_selection') {
+            this.setConversationState(user.phone_number, {
+              ...conversationState,
+              state: CONVERSATION_STATE.AWAITING_SLOT_SELECTION,
+              property: property,
+              availableSlots: pendingRequest.availableSlots
+            });
+          } else if (pendingRequest.type === 'preference_collection') {
+            this.setConversationState(user.phone_number, {
+              ...conversationState,
+              state: CONVERSATION_STATE.AWAITING_TIME_PREFERENCES,
+              property: property,
+              originalMessage: message
+            });
+          }
+        }
+        
+        return appointmentResult;
+      }
 
-    } catch (error) {
-      console.error('❌ [CONVERSATION] Context request error:', error);
-      return await this.generateIntelligentErrorResponse(message, error, user, 'context_request');
+      // If multiple properties and no specific number mentioned, ask which one they mean
+      return this.askWhichPropertyToView(lastSearchResults.results);
+    }
+
+    // If it's not a property request, we can't handle it here.
+    if (!contextRequest.isPropertyRequest || contextRequest.propertyNumber === null) {
+      return null;
+    }
+    
+    // Get the user's last search results from the conversation state.
+        const conversationState = this.getConversationState(user.phone_number);
+        const lastSearchResults = conversationState.lastSearchResults;
+
+    if (!lastSearchResults || !lastSearchResults.results || lastSearchResults.results.length === 0) {
+      return ["I don't have any recent search results to get details from. Please try a new search first."];
+        }
+
+    const propertyIndex = contextRequest.propertyNumber - 1; // Convert to 0-based index
+        const property = lastSearchResults.results[propertyIndex];
+
+        if (!property) {
+      return [`I don't see a property with the number ${contextRequest.propertyNumber} in your last search. Please choose a number from 1 to ${lastSearchResults.results.length}.`];
+        }
+
+    // Now, determine the specific action: view details or book appointment.
+        const appointmentCheck = await appointmentService.isAppointmentRequest(message);
+        if (appointmentCheck.isAppointmentRequest) {
+      console.log(`📅 [CONTEXT] Initiating viewing for property #${contextRequest.propertyNumber}`);
+          return await appointmentService.handleViewingInterest(message, user, property.id);
+    } else {
+      // Default action is to show details.
+      console.log(`📋 [CONTEXT] Showing details for property #${contextRequest.propertyNumber}`);
+      return await this.generateDetailedPropertyInfo(property, user);
     }
   }
 
@@ -983,7 +1082,7 @@ Message to analyze: "${message}"`;
    * @param {object} user - User object
    * @returns {Promise<Array>} - Detailed property info
    */
-  async generateDetailedPropertyInfo(property, requestType, user) {
+  async generateDetailedPropertyInfo(property, user) {
     try {
       // Store this property as the last viewed for context in future messages
       const currentState = this.getConversationState(user.phone_number);
@@ -1034,7 +1133,7 @@ Message to analyze: "${message}"`;
       const messages = [response];
 
       // Add contact information if requested or if it's available
-      if (requestType === 'contact' || property.users) {
+      if (property.users) {
         let contactMsg = '📞 *Contact Information:*\n\n';
         
         if (property.users?.name) {
@@ -1247,6 +1346,471 @@ IMPORTANT: Return ONLY plain text - no JSON, no markdown. Keep it friendly and u
       console.error(`❌ [CONVERSATION] Error saving availability for property ${property.id}:`, error);
       this.clearConversationState(user.phone_number);
       return ["I'm sorry, there was an error saving the availability. Please try again later."];
+    }
+  }
+
+  /**
+   * Handle slot selection during appointment booking
+   * @param {string} message - User's slot selection
+   * @param {object} user - User object
+   * @param {object} conversationState - Current conversation state
+   * @returns {Promise<Array>} - Response messages
+   */
+  async handleSlotSelection(message, user, conversationState) {
+    try {
+      console.log(`📅 [APPOINTMENT] Processing slot selection: "${message}"`);
+      
+      const { property, availableSlots } = conversationState;
+      
+      // Use appointment service to process the selection
+      const result = await appointmentService.processSlotSelection(message, user);
+      
+      // Clear the conversation state since appointment service handles it
+      this.clearConversationState(user.phone_number);
+      
+      return result;
+    } catch (error) {
+      console.error('Error handling slot selection:', error);
+      this.clearConversationState(user.phone_number);
+      return ['❌ Error processing your selection. Please try again.'];
+    }
+  }
+
+  /**
+   * Handle time preferences collection for appointment booking
+   * @param {string} message - User's time preferences
+   * @param {object} user - User object  
+   * @param {object} conversationState - Current conversation state
+   * @returns {Promise<Array>} - Response messages
+   */
+  async handleTimePreferences(message, user, conversationState) {
+    try {
+      console.log(`📅 [APPOINTMENT] Processing time preferences: "${message}"`);
+      
+      // Use appointment service to process preferences
+      const result = await appointmentService.processBuyerPreferences(message, user);
+      
+      // Update conversation state to coordinating
+      this.setConversationState(user.phone_number, {
+        ...conversationState,
+        state: CONVERSATION_STATE.APPOINTMENT_COORDINATING,
+        lastPreferences: message,
+        lastPreferencesTime: new Date()
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('Error handling time preferences:', error);
+      this.clearConversationState(user.phone_number);
+      return ['❌ Error processing your preferences. Please try again.'];
+    }
+  }
+
+  /**
+   * Handle appointment confirmation responses
+   * @param {string} message - User's confirmation
+   * @param {object} user - User object
+   * @param {object} conversationState - Current conversation state
+   * @returns {Promise<Array>} - Response messages
+   */
+  async handleAppointmentConfirmation(message, user, conversationState) {
+    try {
+      console.log(`📅 [APPOINTMENT] Processing confirmation: "${message}"`);
+      
+      // Use appointment service to process confirmation
+      const result = await appointmentService.processCoordinationResponse(message, user);
+      
+      if (result) {
+        // Clear conversation state if appointment is confirmed
+        this.clearConversationState(user.phone_number);
+        return result;
+      }
+      
+      // If appointment service didn't handle it, treat as general message
+      this.clearConversationState(user.phone_number);
+      return await this.processMessage(message, user);
+    } catch (error) {
+      console.error('Error handling appointment confirmation:', error);
+      this.clearConversationState(user.phone_number);
+      return ['❌ Error processing your confirmation. Please try again.'];
+    }
+  }
+
+  /**
+   * Handle coordination messages during appointment booking
+   * @param {string} message - User's coordination message
+   * @param {object} user - User object
+   * @param {object} conversationState - Current conversation state
+   * @returns {Promise<Array>} - Response messages
+   */
+  async handleAppointmentCoordination(message, user, conversationState) {
+    try {
+      console.log(`📅 [APPOINTMENT] Processing coordination: "${message}"`);
+      
+      // Check if this is a time/date response using AI
+      const isTimeResponse = await this.isTimeRelatedMessage(message);
+      
+      if (isTimeResponse.isTimeRelated) {
+        // Use appointment service to handle the time response
+        const result = await appointmentService.processCoordinationResponse(message, user);
+        
+        if (result) {
+          // Update conversation state based on result
+          if (result[0].includes('confirmed') || result[0].includes('Confirmed')) {
+            this.clearConversationState(user.phone_number);
+          }
+          return result;
+        }
+      }
+      
+      // If not time-related, treat as general conversation but maintain state
+      const intent = await openaiService.classifyPropertyIntent(message, user);
+      
+      if (intent.intent === 'search') {
+        // User wants to search while coordinating - allow but maintain appointment context
+        const searchResult = await this.handleSearch(message, user);
+        searchResult.push("\n💡 Your appointment booking is still in progress. I'll update you once the owner responds!");
+        return searchResult;
+      }
+      
+      // For other messages, provide context-aware response
+      return [`📝 I'm still coordinating your viewing appointment. The owner/agent will respond soon.\n\n💭 Your message: "${message}"\n\n💡 In the meantime, you can search for other properties or ask me anything else!`];
+      
+    } catch (error) {
+      console.error('Error handling appointment coordination:', error);
+      return ['❌ Error processing your message. Your appointment booking is still active.'];
+    }
+  }
+
+  /**
+   * Handle owner/agent availability responses
+   * @param {string} message - Owner's availability message
+   * @param {object} user - Owner/agent user object
+   * @returns {Promise<Array>} - Response messages
+   */
+  async handleOwnerAvailabilityResponse(message, user) {
+    try {
+      console.log(`🏠 [CONVERSATION] Processing owner availability: "${message}"`);
+      
+      // Parse the availability using OpenAI to extract structured date/time
+      const availability = await this.parseOwnerAvailabilityWithDates(message);
+      
+      // Find pending coordination requests for this owner's properties
+      const ownerId = user.id;
+      const pendingCoordinations = this.findPendingCoordinationsForOwner(ownerId);
+      
+      if (pendingCoordinations.length === 0) {
+        return [`📅 Thank you for providing your availability!\n\n🤔 However, I don't currently have any pending viewing requests that need coordination.\n\n💡 If someone shows interest in your properties, I'll contact you again to arrange viewings.`];
+      }
+      
+      // For now, handle the most recent pending coordination
+      const coordination = pendingCoordinations[0];
+      
+      // Create proposed appointment details with proper date/time structure
+      const proposedAppointment = {
+        property: coordination.property,
+        buyer: coordination.buyer,
+        ownerAvailability: availability,
+        date: availability.parsedDate || new Date().toISOString().split('T')[0], // Default to today if no specific date
+        dateFormatted: availability.dateFormatted || 'As discussed',
+        timeFormatted: availability.timeFormatted || availability.summary,
+        startTime: availability.startTime,
+        endTime: availability.endTime
+      };
+      
+      // Notify the buyer about owner's availability
+      await this.notifyBuyerOfOwnerAvailability(coordination.buyer, proposedAppointment);
+      
+      return [
+        `✅ Perfect! I've noted your availability: *${availability.summary}*\n\n📞 I'm now coordinating with the interested party.\n\n🔔 I'll let you know once they confirm the viewing time!\n\n💡 You can also say "show my properties" to see all your listings.`
+      ];
+      
+    } catch (error) {
+      console.error('Error handling owner availability response:', error);
+      return [`✅ Thank you for providing your availability!\n\n📞 I'll coordinate with interested parties and get back to you soon.\n\n💡 You can say "show my properties" to see your listings.`];
+    }
+  }
+
+  /**
+   * Parse owner availability message to extract structured date/time information
+   * @param {string} message - Owner's availability message (e.g., "Saturday at 10am")
+   * @returns {Promise<object>} - Parsed availability with date/time components
+   */
+  async parseOwnerAvailabilityWithDates(message) {
+    try {
+      // Get current date/time context
+      const now = new Date();
+      const lisbon = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Lisbon"}));
+      const currentDate = lisbon.toISOString().split('T')[0];
+      const currentTime = lisbon.toTimeString().slice(0, 5);
+      const dayOfWeek = lisbon.toLocaleDateString('en-US', { weekday: 'long' });
+      
+      // Calculate next week dates for reference
+      const tomorrow = new Date(lisbon);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const nextWeek = new Date(lisbon);
+      nextWeek.setDate(nextWeek.getDate() + 7);
+      
+      const systemPrompt = `Parse owner/agent availability message to extract structured date and time information for property viewings.
+
+CURRENT CONTEXT:
+- Current Date: ${currentDate} (${dayOfWeek})
+- Current Time: ${currentTime}
+- Tomorrow: ${tomorrow.toISOString().split('T')[0]}
+- Next Week: ${nextWeek.toISOString().split('T')[0]}
+
+INTERPRET RELATIVE REFERENCES:
+- "tomorrow" = ${tomorrow.toISOString().split('T')[0]}
+- "today" = ${currentDate}
+- "Saturday" = next upcoming Saturday
+- "next Monday" = upcoming Monday after current week
+- "this weekend" = upcoming Saturday/Sunday
+
+EXTRACT:
+- Specific date (if mentioned) or calculate from day name
+- Start time (required)
+- End time (estimate +1 hour if not specified)
+- Summary text
+
+EXAMPLES:
+"Saturday at 10am" → {
+  "parsedDate": "${(() => {
+    const sat = new Date(lisbon);
+    const daysSinceMonday = (sat.getDay() + 6) % 7;
+    const daysUntilSaturday = (6 - daysSinceMonday) % 7;
+    if (daysUntilSaturday === 0 && sat.getHours() >= 10) {
+      sat.setDate(sat.getDate() + 7);
+    } else {
+      sat.setDate(sat.getDate() + daysUntilSaturday);
+    }
+    return sat.toISOString().split('T')[0];
+  })()}",
+  "dateFormatted": "Saturday, ${(() => {
+    const sat = new Date(lisbon);
+    const daysSinceMonday = (sat.getDay() + 6) % 7;
+    const daysUntilSaturday = (6 - daysSinceMonday) % 7;
+    if (daysUntilSaturday === 0 && sat.getHours() >= 10) {
+      sat.setDate(sat.getDate() + 7);
+    } else {
+      sat.setDate(sat.getDate() + daysUntilSaturday);
+    }
+    return sat.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  })()}",
+  "startTime": "10:00",
+  "endTime": "11:00", 
+  "timeFormatted": "10:00 - 11:00",
+  "summary": "Saturday at 10am"
+}
+
+"Tuesday 2-4 PM" → {
+  "parsedDate": "${(() => {
+    const tue = new Date(lisbon);
+    const daysSinceMonday = (tue.getDay() + 6) % 7;
+    const daysUntilTuesday = (1 - daysSinceMonday + 7) % 7;
+    if (daysUntilTuesday === 0 && tue.getHours() >= 14) {
+      tue.setDate(tue.getDate() + 7);
+    } else {
+      tue.setDate(tue.getDate() + daysUntilTuesday);
+    }
+    return tue.toISOString().split('T')[0];
+  })()}",
+  "dateFormatted": "Tuesday, ${(() => {
+    const tue = new Date(lisbon);
+    const daysSinceMonday = (tue.getDay() + 6) % 7;
+    const daysUntilTuesday = (1 - daysSinceMonday + 7) % 7;
+    if (daysUntilTuesday === 0 && tue.getHours() >= 14) {
+      tue.setDate(tue.getDate() + 7);
+    } else {
+      tue.setDate(tue.getDate() + daysUntilTuesday);
+    }
+    return tue.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  })()}",
+  "startTime": "14:00",
+  "endTime": "16:00",
+  "timeFormatted": "14:00 - 16:00",
+  "summary": "Tuesday 2-4 PM"
+}
+
+"Tomorrow at 3pm" → {
+  "parsedDate": "${tomorrow.toISOString().split('T')[0]}",
+  "dateFormatted": "Tomorrow, ${tomorrow.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}",
+  "startTime": "15:00", 
+  "endTime": "16:00",
+  "timeFormatted": "15:00 - 16:00",
+  "summary": "Tomorrow at 3pm"
+}
+
+Return JSON with these exact fields. Use 24-hour format for times. If no end time specified, add 1 hour to start time.
+Always calculate dates relative to current context.`;
+
+      const response = await openaiService.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Parse availability: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 400
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const cleanContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanContent);
+      
+      // Validate required fields
+      if (!result.startTime) {
+        throw new Error('No start time extracted');
+      }
+      
+      console.log('📅 [CONVERSATION] Parsed owner availability:', result);
+      return result;
+      
+    } catch (error) {
+      console.error('Error parsing owner availability with dates:', error);
+      
+      // Fallback to simple parsing with current date context
+      const availability = await appointmentService.parseTimePreferences(message);
+      const fallbackDate = new Date();
+      fallbackDate.setDate(fallbackDate.getDate() + 1); // Default to tomorrow
+      
+      return {
+        parsedDate: fallbackDate.toISOString().split('T')[0],
+        dateFormatted: 'As discussed',
+        startTime: '10:00',
+        endTime: '11:00',
+        timeFormatted: '10:00 - 11:00',
+        summary: availability.summary || message
+      };
+    }
+  }
+
+  /**
+   * Find pending appointment coordinations for an owner
+   * @param {string} ownerId - Owner's user ID
+   * @returns {Array} - Pending coordinations
+   */
+  findPendingCoordinationsForOwner(ownerId) {
+    const pendingCoordinations = [];
+    
+    // Check appointment service pending requests for coordination involving this owner's properties
+    for (const [buyerPhone, request] of appointmentService.pendingRequests.entries()) {
+      if (request.type === 'coordinating' && request.property?.owner_id === ownerId) {
+        pendingCoordinations.push({
+          buyerPhone: buyerPhone,
+          buyer: { phone_number: buyerPhone },
+          property: request.property,
+          preferences: request.buyerPreferences
+        });
+      }
+    }
+    
+    return pendingCoordinations;
+  }
+
+  /**
+   * Notify buyer about owner's availability
+   * @param {object} buyer - Buyer user object
+   * @param {object} proposedAppointment - Appointment details
+   */
+  async notifyBuyerOfOwnerAvailability(buyer, proposedAppointment) {
+    try {
+      const propertyEmoji = this.getPropertyEmoji(proposedAppointment.property.property_type);
+      const message = `${propertyEmoji} *Great News!*\n\n📍 Property: ${proposedAppointment.property.address}\n\n🗓️ The owner/agent is available: *${proposedAppointment.ownerAvailability.summary}*\n\n💡 Does this time work for you?\n\n✅ Reply "Yes" to confirm\n❌ Reply "No" to suggest a different time\n\n📅 I'll finalize the viewing once you confirm!`;
+
+      await twilioService.sendWhatsAppMessage(buyer.phone_number, message);
+      
+      // Update buyer's pending request to await confirmation
+      const pendingRequest = appointmentService.pendingRequests.get(buyer.phone_number);
+      if (pendingRequest) {
+        pendingRequest.type = 'awaiting_buyer_confirmation';
+        pendingRequest.proposedAppointment = proposedAppointment;
+        appointmentService.pendingRequests.set(buyer.phone_number, pendingRequest);
+        
+        // CRITICAL FIX: Update conversation state to match appointment service state
+        this.setConversationState(buyer.phone_number, {
+          state: CONVERSATION_STATE.AWAITING_APPOINTMENT_CONFIRMATION,
+          property: proposedAppointment.property,
+          proposedAppointment: proposedAppointment,
+          lastOwnerResponse: new Date()
+        });
+        
+        console.log(`📅 [CONVERSATION] Updated buyer ${buyer.phone_number} state to AWAITING_APPOINTMENT_CONFIRMATION`);
+      }
+    } catch (error) {
+      console.error('Error notifying buyer of owner availability:', error);
+    }
+  }
+
+  /**
+   * Check if a message is time/date related using AI
+   * @param {string} message - User's message
+   * @returns {Promise<object>} - Time analysis result
+   */
+  async isTimeRelatedMessage(message) {
+    try {
+      const systemPrompt = `Analyze if a message contains time, date, or scheduling-related information.
+
+TIME/DATE INDICATORS:
+- Specific times: "2 PM", "14:00", "at 3", "around noon"
+- Days: "Monday", "Tuesday", "tomorrow", "next week"
+- Dates: "July 12", "12th", "on the 15th"
+- Time ranges: "afternoon", "morning", "evening"
+- Scheduling words: "available", "can do", "works for me", "schedule"
+- Confirmations: "yes", "okay", "sounds good" (in scheduling context)
+
+NON-TIME INDICATORS:
+- General conversation: "how are you", "tell me about"
+- Property questions: "what's the price", "show me properties"
+- Other topics: unrelated to scheduling
+
+Return JSON:
+{
+  "isTimeRelated": boolean,
+  "confidence": 0.0-1.0,
+  "timeComponents": ["detected", "time", "elements"],
+  "type": "specific_time|general_availability|confirmation"
+}`;
+
+      const response = await openaiService.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Analyze: "${message}"` }
+        ],
+        temperature: 0.1,
+        max_tokens: 200
+      });
+
+      const content = response.choices[0].message.content.trim();
+      const cleanContent = content.replace(/```json\s*|\s*```/g, '').trim();
+      const result = JSON.parse(cleanContent);
+      
+      return {
+        isTimeRelated: result.isTimeRelated || false,
+        confidence: result.confidence || 0.0,
+        timeComponents: result.timeComponents || [],
+        type: result.type || 'unknown'
+      };
+    } catch (error) {
+      console.error('Error analyzing time-related message:', error);
+      
+      // Fallback regex check
+      const timePatterns = [
+        /\b(\d{1,2})\s*(am|pm|:\d{2})\b/i,
+        /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i,
+        /\b(morning|afternoon|evening|noon|tonight|today|tomorrow)\b/i,
+        /\b(available|can\s+do|works?\s+for|schedule|confirm)\b/i,
+        /\b(yes|okay|ok|sure|sounds?\s+good)\b/i
+      ];
+      
+      const isTimeRelated = timePatterns.some(pattern => pattern.test(message));
+      
+      return {
+        isTimeRelated: isTimeRelated,
+        confidence: isTimeRelated ? 0.7 : 0.3,
+        timeComponents: [],
+        type: 'unknown'
+      };
     }
   }
 

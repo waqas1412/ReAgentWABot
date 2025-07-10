@@ -16,6 +16,30 @@ class AppointmentService {
   }
 
   /**
+   * Get current date and time for context
+   * @returns {Object} - Current date/time info
+   */
+  getCurrentDateTime() {
+    const now = new Date();
+    const lisbon = new Date(now.toLocaleString("en-US", {timeZone: "Europe/Lisbon"}));
+    
+    return {
+      currentDate: lisbon.toISOString().split('T')[0], // YYYY-MM-DD
+      currentTime: lisbon.toTimeString().slice(0, 5), // HH:MM
+      currentDateTime: lisbon,
+      dayOfWeek: lisbon.toLocaleDateString('en-US', { weekday: 'long' }),
+      formatted: lisbon.toLocaleDateString('en-US', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      })
+    };
+  }
+
+  /**
    * Handle viewing interest from buyer/renter
    * @param {string} message - User's message expressing interest
    * @param {object} user - Buyer/renter user object
@@ -332,14 +356,24 @@ class AppointmentService {
    */
   async processCoordinationResponse(message, user) {
     try {
+      console.log(`📅 [APPOINTMENT] Processing coordination response from ${user.phone_number}: "${message}"`);
+      
       const pendingRequest = this.pendingRequests.get(user.phone_number);
+      console.log(`📅 [APPOINTMENT] Pending request for ${user.phone_number}:`, pendingRequest ? {
+        type: pendingRequest.type,
+        hasProposedAppointment: !!pendingRequest.proposedAppointment,
+        property: pendingRequest.property?.address
+      } : 'NOT FOUND');
+      
       if (!pendingRequest || (pendingRequest.type !== 'awaiting_buyer_confirmation' && pendingRequest.type !== 'coordinating')) {
+        console.log(`❌ [APPOINTMENT] No valid pending request found. Type: ${pendingRequest?.type || 'none'}`);
         return null; // Not in coordination state
       }
 
       // If still in 'coordinating' state, this might be a response to owner's counter-offer
       // Check if this looks like a confirmation or new preference
       const isConfirmation = await this.isConfirmationMessage(message);
+      console.log(`📅 [APPOINTMENT] Confirmation analysis:`, isConfirmation);
       
       if (isConfirmation.isConfirmation && pendingRequest.type === 'coordinating') {
         // Buyer seems to be confirming something during coordination
@@ -365,20 +399,39 @@ class AppointmentService {
       }
       
       if (isConfirmation.isConfirmation && pendingRequest.type === 'awaiting_buyer_confirmation') {
+        console.log(`✅ [APPOINTMENT] Buyer confirmed appointment! Processing booking...`);
+        
         // Buyer confirmed - proceed to book the appointment
         const appointmentDetails = pendingRequest.proposedAppointment;
+        console.log('📅 [APPOINTMENT] Appointment details to book:', appointmentDetails);
         
         // Book the appointment using the confirmed details
         const appointment = await this.bookAppointment({
           userId: user.id,
           propertyId: pendingRequest.property.id,
           date: appointmentDetails.date,
-          startTime: appointmentDetails.timeFormatted.split(' - ')[0],
-          endTime: appointmentDetails.timeFormatted.split(' - ')[1],
+          startTime: appointmentDetails.startTime,
+          endTime: appointmentDetails.endTime,
           status: 'confirmed' // This booking is pre-confirmed by the agent
         });
 
+        console.log('📅 [APPOINTMENT] Booking result:', appointment);
+
         if (appointment.success) {
+          console.log('📅 [APPOINTMENT] Successfully booked appointment:', appointment.appointment);
+          
+          // Generate and send calendar invites to both parties
+          const calendarInvite = await this.generateCalendarInviteForAppointment(appointment.appointment);
+          
+          // Send calendar invite to buyer
+          await twilioService.sendWhatsAppMessage(user.phone_number, calendarInvite);
+          
+          // Send calendar invite to owner/agent
+          const ownerAgent = pendingRequest.property.owner || pendingRequest.property.agent;
+          if (ownerAgent?.phone_number) {
+            await twilioService.sendWhatsAppMessage(ownerAgent.phone_number, calendarInvite);
+          }
+          
           // Notify owner/agent of confirmation
           await this.notifyAppointmentConfirmed(pendingRequest.property, appointmentDetails, user);
           
@@ -389,31 +442,35 @@ class AppointmentService {
             `✅ *Viewing Confirmed!*\n\n📍 ${pendingRequest.property.address}\n📅 ${appointmentDetails.dateFormatted}\n⏰ ${appointmentDetails.timeFormatted}\n\n🎉 Great! The property owner/agent has been notified.\n\n📧 You'll both receive calendar invites shortly!`
           ];
         } else {
+          console.error('❌ [APPOINTMENT] Failed to book appointment:', appointment.error);
           return ['❌ Sorry, there was an issue booking the appointment. Please try again.'];
         }
-      } else {
-        // Check if this is providing new time preferences during coordination
-        const hasTimeReference = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\s*(?:am|pm)|morning|afternoon|evening|noon|\d+\s*(?:am|pm))\b/i.test(message);
+      }
+      
+      // Check if this is providing new time preferences during coordination
+      const hasTimeReference = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}\s*(?:am|pm)|morning|afternoon|evening|noon|\d+\s*(?:am|pm))\b/i.test(message);
+      
+      if (hasTimeReference) {
+        console.log(`📅 [APPOINTMENT] Time reference detected, updating preferences`);
         
-        if (hasTimeReference) {
-          // Treat as new preferences
-          const preferences = await this.parseTimePreferences(message);
-          
-          // Update buyer preferences
-          pendingRequest.buyerPreferences = preferences;
-          pendingRequest.type = 'coordinating';
-          this.pendingRequests.set(user.phone_number, pendingRequest);
+        // Treat as new preferences
+        const preferences = await this.parseTimePreferences(message);
+        
+        // Update buyer preferences
+        pendingRequest.buyerPreferences = preferences;
+        pendingRequest.type = 'coordinating';
+        this.pendingRequests.set(user.phone_number, pendingRequest);
 
-          // Contact owner/agent again
-          await this.contactOwnerAgentForAvailability(pendingRequest.property, preferences, user);
+        // Contact owner/agent again
+        await this.contactOwnerAgentForAvailability(pendingRequest.property, preferences, user);
 
-          return [
-            `📝 Got your updated preferences: *${preferences.summary}*\n\n⏳ I'm coordinating with the property owner/agent again.\n\n🔔 I'll get back to you with their availability!`
-          ];
-        } else {
-          // Not a time preference or confirmation - let general conversation handle it
-          return null;
-        }
+        return [
+          `📝 Got your updated preferences: *${preferences.summary}*\n\n⏳ I'm coordinating with the property owner/agent again.\n\n🔔 I'll get back to you with their availability!`
+        ];
+      } else {
+        console.log(`📅 [APPOINTMENT] No time reference or confirmation detected, returning null`);
+        // Not a time preference or confirmation - let general conversation handle it
+        return null;
       }
     } catch (error) {
       console.error('Error processing coordination response:', error);
@@ -528,9 +585,25 @@ Examples:
    */
   async bookAppointment({ userId, propertyId, date, startTime, endTime, timeSlotId = null, status = 'pending_owner_approval' }) {
     try {
-      // For dynamic slots, the timeSlotId might be synthetic (e.g., 'Monday-14:00') and not a real UUID.
-      // We only pass it to the create function if it looks like a real UUID.
-      const realTimeSlotId = timeSlotId && timeSlotId.includes('-') && timeSlotId.length > 10 ? timeSlotId : null;
+      let finalTimeSlotId = timeSlotId;
+      
+      // If no timeSlotId provided or it's a synthetic ID, create a real time slot
+      if (!timeSlotId || (timeSlotId && timeSlotId.includes('-') && timeSlotId.length <= 20)) {
+        console.log(`📅 [APPOINTMENT] Creating dynamic time slot for ${startTime}-${endTime}`);
+        
+        // Create or find existing time slot for this time range
+        const ViewingTimeSlot = require('../models/ViewingTimeSlot');
+        const existingSlot = await ViewingTimeSlot.findByTimeRange(startTime, endTime);
+        
+        if (existingSlot) {
+          finalTimeSlotId = existingSlot.id;
+          console.log(`📅 [APPOINTMENT] Using existing time slot: ${existingSlot.id}`);
+        } else {
+          const newSlot = await ViewingTimeSlot.createIfNotExists(startTime, endTime);
+          finalTimeSlotId = newSlot.id;
+          console.log(`📅 [APPOINTMENT] Created new time slot: ${newSlot.id}`);
+        }
+      }
 
       const appointment = await ViewingAppointment.createAppointment({
         user_id: userId,
@@ -538,7 +611,7 @@ Examples:
         appointment_date: date,
         start_time: startTime,
         end_time: endTime,
-        viewing_time_slot_id: realTimeSlotId,
+        viewing_time_slot_id: finalTimeSlotId,
         status: status
       });
 
@@ -556,10 +629,13 @@ Examples:
    */
   async generateCalendarInviteForAppointment(appointment) {
     try {
+      console.log('📅 [CALENDAR] Generating invite for appointment:', appointment);
+      
       if (!appointment.property_id || !appointment.user_id) {
         throw new Error("Appointment is missing property or user details.");
       }
       
+      // Get property and user details
       const property = await Property.findById(appointment.property_id);
       const user = await User.findById(appointment.user_id);
       
@@ -571,7 +647,15 @@ Examples:
       const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
       const endDate = new Date(`${appointment.appointment_date}T${appointment.end_time}`);
 
+      // Validate dates
+      if (isNaN(appointmentDate.getTime()) || isNaN(endDate.getTime())) {
+        throw new Error("Invalid appointment date or time");
+      }
+
       const formatICSDate = (date) => date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+      // Generate unique ID for the event
+      const eventUID = `${appointment.id}@reagentbot.com`;
 
       const icsContent = `BEGIN:VCALENDAR
 VERSION:2.0
@@ -579,24 +663,53 @@ PRODID:-//ReAgent Bot//Property Viewing//EN
 CALSCALE:GREGORIAN
 METHOD:REQUEST
 BEGIN:VEVENT
-UID:${now.getTime()}@reagentbot.com
+UID:${eventUID}
 DTSTAMP:${formatICSDate(now)}
 DTSTART:${formatICSDate(appointmentDate)}
 DTEND:${formatICSDate(endDate)}
 SUMMARY:Property Viewing - ${property.address}
-DESCRIPTION:Property viewing appointment for ${property.address}.
+DESCRIPTION:Property viewing appointment\\n\\nProperty: ${property.address}\\nViewer: ${user.name || 'Potential buyer/renter'}\\nDate: ${appointment.appointment_date}\\nTime: ${appointment.start_time} - ${appointment.end_time}\\nStatus: ${appointment.status}\\n\\nGenerated by ReAgent Bot
 LOCATION:${property.address}
 STATUS:CONFIRMED
+TRANSP:OPAQUE
+BEGIN:VALARM
+TRIGGER:-PT15M
+ACTION:DISPLAY
+DESCRIPTION:Property viewing in 15 minutes
+END:VALARM
 END:VEVENT
 END:VCALENDAR`;
 
-      const inviteMessage = `📅 *Calendar Invite*\n\nHere is the data for your calendar event. You can copy the text below and save it as an ".ics" file to add it to your calendar.\n\n\`\`\`\n${icsContent}\n\`\`\``;
+      const inviteMessage = `📅 *Calendar Invite*
+
+🏠 **Property Viewing**
+📍 **Location:** ${property.address}
+📅 **Date:** ${new Date(appointment.appointment_date).toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+⏰ **Time:** ${appointment.start_time} - ${appointment.end_time}
+👤 **Attendee:** ${user.name || 'Potential buyer/renter'}
+
+📧 **Calendar Event Data:**
+Copy the text below and save it as a ".ics" file to add to your calendar:
+
+\`\`\`
+${icsContent}
+\`\`\`
+
+💡 **Tip:** Most email clients and calendar apps can import .ics files directly!`;
       
       return inviteMessage;
 
     } catch (error) {
       console.error('Error generating calendar invite from appointment:', error);
-      return '📅 Could not generate calendar invite data for this appointment.';
+      return `📅 *Calendar Invite*
+
+✅ Your property viewing appointment is confirmed!
+
+📍 **Property:** ${appointment.property_id ? 'Property viewing' : 'Property'}
+📅 **Date:** ${appointment.appointment_date || 'Date TBD'}
+⏰ **Time:** ${appointment.start_time || 'Time TBD'} - ${appointment.end_time || 'Time TBD'}
+
+❌ Could not generate calendar file due to missing details, but your appointment is confirmed in our system.`;
     }
   }
 
@@ -712,7 +825,7 @@ END:VALARM
 END:VEVENT
 END:VCALENDAR`;
 
-      const inviteMessage = `📅 *Calendar Invite Details*\n\nHere is the calendar event data. You can copy the text below and save it as an ".ics" file to import it into your calendar.\n\n\`\`\`\n${icsContent}\n\`\`\``;
+      const inviteMessage = `📅 *Calendar Invite Details*\n\nHere is the calendar event data. You can copy the text below and save it as an ".ics" file to import it into your calendar.\n\n\`\`\`\n${icsContent}\`\`\``;
 
       return inviteMessage;
       
@@ -723,25 +836,47 @@ END:VCALENDAR`;
   }
 
   /**
-   * Parse time preferences using AI
+   * Parse time preferences using AI with current date/time context
    * @param {string} message - User's preference message
    * @returns {Promise<object>} - Parsed preferences
    */
   async parseTimePreferences(message) {
     try {
-      const systemPrompt = `Parse viewing time preferences from user message. Extract:
+      const currentDateTime = this.getCurrentDateTime();
+      
+      const systemPrompt = `Parse viewing time preferences from user message with current date/time context.
+
+CURRENT CONTEXT:
+- Current Date: ${currentDateTime.currentDate} (${currentDateTime.dayOfWeek})
+- Current Time: ${currentDateTime.currentTime}
+- Current DateTime: ${currentDateTime.formatted}
+
+Extract and interpret relative time references:
+- "tomorrow" = ${new Date(Date.now() + 24*60*60*1000).toISOString().split('T')[0]}
+- "today" = ${currentDateTime.currentDate}
+- "next Monday" = calculate based on current date
+- "this weekend" = upcoming Saturday/Sunday
+
+EXTRACT:
 - Preferred days (Monday, Tuesday, etc.)
-- Preferred times (morning, afternoon, specific times)
+- Preferred times (morning, afternoon, specific times)  
 - Flexibility level
 - Urgency
+- Convert relative dates to absolute dates
 
 Return JSON: {
   "days": ["monday", "tuesday"],
   "times": ["afternoon", "2pm"],
+  "absoluteDates": ["2024-12-16", "2024-12-17"],
   "flexibility": "high|medium|low", 
   "urgency": "high|medium|low",
-  "summary": "Tuesday or Wednesday afternoon"
-}`;
+  "summary": "Tuesday or Wednesday afternoon",
+  "preferredDateTime": "2024-12-17 14:00" // if specific enough
+}
+
+Examples:
+- "tomorrow at 2pm" → {"absoluteDates": ["${new Date(Date.now() + 24*60*60*1000).toISOString().split('T')[0]}"], "preferredDateTime": "${new Date(Date.now() + 24*60*60*1000).toISOString().split('T')[0]} 14:00"}
+- "Monday morning" → {"days": ["monday"], "times": ["morning"]}`;
 
       const response = await openaiService.client.chat.completions.create({
         model: 'gpt-4o-mini',
@@ -750,12 +885,17 @@ Return JSON: {
           { role: 'user', content: message }
         ],
         temperature: 0.1,
-        max_tokens: 200
+        max_tokens: 300
       });
 
       const content = response.choices[0].message.content.trim();
       const cleanContent = content.replace(/```json\s*|\s*```/g, '').trim();
-      return JSON.parse(cleanContent);
+      const result = JSON.parse(cleanContent);
+      
+      // Add current context to result
+      result.contextDateTime = currentDateTime;
+      
+      return result;
     } catch (error) {
       console.error('Error parsing time preferences:', error);
       return {
@@ -763,7 +903,8 @@ Return JSON: {
         times: [],
         flexibility: 'high',
         urgency: 'medium',
-        summary: message
+        summary: message,
+        contextDateTime: this.getCurrentDateTime()
       };
     }
   }
@@ -785,6 +926,9 @@ CRITICAL APPOINTMENT PATTERNS TO DETECT:
 - "book a viewing", "schedule a visit", "arrange a tour" → BOOKING REQUEST
 - "when can I see", "available times" → TIME INQUIRY
 - "I want to visit", "can I see this property" → DIRECT REQUEST
+- "i can do [time/date]" → TIME AVAILABILITY (appointment continuation)
+- "[day] at [time]" → SPECIFIC TIME OFFER (appointment continuation)
+- "tomorrow at 2pm", "monday afternoon" → TIME SPECIFICATION
 
 HANDLE TYPOS & VARIATIONS INTELLIGENTLY:
 - "interest" = "interested" (common typo)
@@ -805,6 +949,9 @@ EXAMPLES THAT SHOULD BE DETECTED:
 ✅ "want to see property 5" → YES (0.9 confidence)
 ✅ "can i view this place" → YES (0.85 confidence)
 ✅ "book viewing for number 2" → YES (0.95 confidence)
+✅ "i can do 12 july 2025 at 2 pm" → YES (0.9 confidence, time offer)
+✅ "tomorrow afternoon works" → YES (0.85 confidence, time availability)
+✅ "monday at 3pm" → YES (0.9 confidence, time specification)
 
 ❌ "tell me about apartments" → NO (0.1 confidence, just inquiry)
 ❌ "what's the price" → NO (0.1 confidence, price inquiry)
@@ -813,8 +960,9 @@ Return JSON:
 {
   "isAppointmentRequest": boolean,
   "confidence": 0.0-1.0,
-  "intentType": "viewing|booking|inquiry",
+  "intentType": "viewing|booking|time_offer|inquiry",
   "hasContextualReference": boolean,
+  "isTimeContinuation": boolean,
   "keywords": ["detected", "keywords"]
 }
 

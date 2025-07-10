@@ -62,8 +62,8 @@ class DatabaseService {
    * @returns {Object} - User object with role
    */
   async getOrCreateUserFromWhatsApp(phoneNumber, name = null) {
-    const cleanNumber = phoneNumber.replace('whatsapp:', '');
-    return await User.getOrCreateUser(cleanNumber, { name });
+      const cleanNumber = phoneNumber.replace('whatsapp:', '');
+      return await User.getOrCreateUser(cleanNumber, { name });
   }
 
   /**
@@ -90,21 +90,6 @@ class DatabaseService {
    * Property Management Operations
    */
   
-  /**
-   * Search properties based on user preferences or custom filters
-   * @param {Object} searchParams - Search parameters
-   * @param {Object} options - Query options
-   * @returns {Array} - Array of matching properties
-   */
-  async searchProperties(searchParams = {}, options = {}) {
-    try {
-      return await Property.searchProperties(searchParams, options);
-    } catch (error) {
-      console.error('Error searching properties:', error);
-      throw error;
-    }
-  }
-
   /**
    * Get properties matching user preferences
    * @param {string} userId - User ID
@@ -368,63 +353,6 @@ class DatabaseService {
   /**
    * Utility Methods
    */
-  
-  /**
-   * Format property for WhatsApp display
-   * @param {Object} property - Property object
-   * @returns {string} - Formatted property string
-   */
-  formatPropertyForWhatsApp(property) {
-    const lines = [];
-    
-    lines.push(`🏠 *${property.address}*`);
-    
-    if (property.price) {
-      lines.push(`💰 Price: $${property.price.toLocaleString()}`);
-    }
-    
-    if (property.bedrooms || property.bathrooms) {
-      const rooms = [];
-      if (property.bedrooms) rooms.push(`${property.bedrooms} bed`);
-      if (property.bathrooms) rooms.push(`${property.bathrooms} bath`);
-      lines.push(`🛏️ ${rooms.join(', ')}`);
-    }
-    
-    if (property.area) {
-      lines.push(`📐 Area: ${property.area} sqm`);
-      if (property.price_per_sqm) {
-        lines.push(`📊 Price/sqm: $${property.price_per_sqm.toFixed(2)}`);
-      }
-    }
-    
-    if (property.neighborhood) {
-      lines.push(`📍 ${property.neighborhood}`);
-    }
-    
-    if (property.apartment_types?.type) {
-      lines.push(`🏢 Type: ${property.apartment_types.type}`);
-    }
-    
-    const features = [];
-    if (property.furnished) features.push('Furnished');
-    if (property.elevator) features.push('Elevator');
-    if (property.air_conditioning) features.push('AC');
-    if (property.work_room) features.push('Work Room');
-    
-    if (features.length > 0) {
-      lines.push(`✨ Features: ${features.join(', ')}`);
-    }
-    
-    if (property.description) {
-      lines.push(`📝 ${property.description}`);
-    }
-    
-    if (property.property_link) {
-      lines.push(`🔗 View Details: ${property.property_link}`);
-    }
-    
-    return lines.join('\n');
-  }
 }
 
 module.exports = new DatabaseService(); 

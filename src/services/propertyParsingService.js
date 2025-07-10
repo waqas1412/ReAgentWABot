@@ -155,23 +155,6 @@ class PropertyParsingService {
   }
 
   /**
-   * Add a property using rigid format data (deprecated - use addValidatedPropertyToDatabase)
-   * @param {object} propertyData - Rigid format property data from OpenAI
-   * @param {object} user - User object
-   * @returns {Promise<object>} - Created property object
-   */
-  async addRigidPropertyToDatabase(propertyData, user) {
-    // Validate the data first
-    const validation = dataValidationService.validateAndNormalizeProperty(propertyData);
-    if (!validation.isValid) {
-      throw new Error(`Validation failed: ${validation.errors.join(', ')}`);
-    }
-
-    // Use the new validated method
-    return await this.addValidatedPropertyToDatabase(validation.data, user);
-  }
-
-  /**
    * Get or create location data using structured names with duplicate prevention
    * @param {object} locationData - Location data with normalized names
    * @returns {Promise<object>} - Location data with IDs
@@ -204,23 +187,6 @@ class PropertyParsingService {
       throw new Error(`Failed to process location data: ${error.message}`);
     }
   }
-
-  /**
-   * Get or create location data using structured names (deprecated)
-   * @param {string} countryName - Country name
-   * @param {string} cityName - City name
-   * @param {string} districtName - District name (optional)
-   * @returns {Promise<object>} - Location data with IDs
-   */
-  async getOrCreateLocationFromNames(countryName, cityName, districtName) {
-    return await this.getOrCreateLocationFromNamesWithDuplicatePrevention({
-      country_name: countryName,
-      city_name: cityName,
-      district_name: districtName
-    });
-  }
-
-
 
   /**
    * Find or create country with proper duplicate prevention
@@ -277,214 +243,6 @@ class PropertyParsingService {
       console.error(`[COUNTRY_CREATE] Error with country ${normalizedName}:`, error);
       throw new Error(`Failed to find or create country: ${error.message}`);
     }
-  }
-
-  /**
-   * Get or create country (using admin DB to bypass RLS) - deprecated
-   */
-  async getOrCreateCountry(countryName) {
-    return await this.findOrCreateCountryNoDuplicates(countryName);
-  }
-
-  /**
-   * Get or create city (using admin DB to bypass RLS)
-   */
-  async getOrCreateCity(cityName, countryId) {
-    try {
-      if (!countryId) return null;
-
-      // First try to find existing with regular client
-      const existing = await City.findByName(cityName, countryId);
-      if (existing) return existing;
-
-      // Create using admin client to bypass RLS
-      City.useAdminDb();
-      const created = await City.create({
-        city: cityName,
-        country_id: countryId
-      });
-      City.useUserDb(); // Reset to user client
-      
-      return created;
-    } catch (error) {
-      console.error('Error with city:', error);
-      City.useUserDb(); // Ensure we reset on error
-      return null;
-    }
-  }
-
-  /**
-   * Get or create district (using admin DB to bypass RLS)
-   */
-  async getOrCreateDistrict(districtName, countryId) {
-    try {
-      if (!countryId) return null;
-
-      // First try to find existing with regular client
-      const existing = await District.findByName(districtName, countryId);
-      if (existing) return existing;
-
-      // Create using admin client to bypass RLS
-      District.useAdminDb();
-      const created = await District.create({
-        district: districtName,
-        country_id: countryId
-      });
-      District.useUserDb(); // Reset to user client
-      
-      return created;
-    } catch (error) {
-      console.error('Error with district:', error);
-      District.useUserDb(); // Ensure we reset on error
-      return null;
-    }
-  }
-
-  /**
-   * Get or create apartment type (using admin DB to bypass RLS)
-   */
-  async getOrCreateApartmentType(typingDetails) {
-    try {
-      if (!typingDetails) return null;
-
-      // First try to find existing with regular client
-      const existing = await ApartmentType.findByType(typingDetails);
-      if (existing) return existing;
-
-      // Create using admin client to bypass RLS
-      ApartmentType.useAdminDb();
-      const created = await ApartmentType.create({
-        type: typingDetails
-        // Removed description field as it doesn't exist in schema
-      });
-      ApartmentType.useUserDb(); // Reset to user client
-      
-      return created;
-    } catch (error) {
-      console.error('Error with apartment type:', error);
-      ApartmentType.useUserDb(); // Ensure we reset on error
-      return null;
-    }
-  }
-
-
-
-  /**
-   * Format response for property addition results
-   * @param {Array} results - Array of addition results
-   * @returns {string} - Formatted response with rich text
-   */
-  formatPropertyAdditionResponse(results) {
-    const successCount = results.filter(r => r.success).length;
-    const failureCount = results.length - successCount;
-
-    let response = `🏠 **Property Addition Results**\n\n`;
-
-    if (successCount > 0) {
-      response += `✅ **Successfully added ${successCount} propert${successCount === 1 ? 'y' : 'ies'}:**\n\n`;
-      
-      results.filter(r => r.success).forEach((result, index) => {
-        const property = result.property;
-        response += `${index + 1}. 🏢 ${property.address}\n`;
-        response += `   💰 €${property.price}\n`; // Default to EUR since currency is in remarks
-        response += `   🛏️ ${property.bedrooms || 0} bed${(property.bedrooms || 0) !== 1 ? 's' : ''} • 🛁 ${property.bathrooms || 0} bath${(property.bathrooms || 0) !== 1 ? 's' : ''}\n`;
-        if (property.area) {
-          response += `   📐 ${property.area}m²\n`;
-        }
-        if (property.property_link) {
-          response += `   🔗 ${property.property_link}\n`;
-        }
-        response += `   🆔 Database ID: ${property.id}\n\n`;
-      });
-    }
-
-    if (failureCount > 0) {
-      response += `❌ **Failed to add ${failureCount} propert${failureCount === 1 ? 'y' : 'ies'}:**\n\n`;
-      
-      results.filter(r => !r.success).forEach((result, index) => {
-        response += `${index + 1}. Property ${result.propertyIndex || 'Unknown'}\n`;
-        response += `   Error: ${result.error}\n\n`;
-      });
-    }
-
-    response += `📊 **Summary:** ${successCount} added, ${failureCount} failed out of ${results.length} total properties\n\n`;
-    response += `💡 Use "search properties" to view your listings or "my properties" to manage them.`;
-
-    return this.formatRichMessage(response);
-  }
-
-  /**
-   * Format contact information for storage in remarks field
-   * @param {object} propertyData - Property data with contact info
-   * @returns {string} - Formatted contact information
-   */
-  formatContactInfo(propertyData) {
-    let contactInfo = '';
-    
-    if (propertyData.contact_name || propertyData.contact_phone) {
-      contactInfo += 'Contact Information:\n';
-      if (propertyData.contact_name) {
-        contactInfo += `Name: ${propertyData.contact_name}\n`;
-      }
-      if (propertyData.contact_phone) {
-        contactInfo += `Phone: ${propertyData.contact_phone}\n`;
-      }
-    }
-    
-    if (propertyData.currency && propertyData.currency !== 'EUR') {
-      contactInfo += `Currency: ${propertyData.currency}\n`;
-    }
-    
-    if (propertyData.listing_type && propertyData.listing_type !== 'rent') {
-      contactInfo += `Listing Type: ${propertyData.listing_type}\n`;
-    }
-    
-    return contactInfo.trim();
-  }
-
-  /**
-   * Chunk long response into multiple messages for WhatsApp
-   * @param {string} response - Long response message
-   * @returns {string} - First chunk with indication of more messages
-   */
-  chunkLongResponse(response) {
-    const maxLength = 1500; // Leave some buffer
-    
-    if (response.length <= maxLength) {
-      return response;
-    }
-
-    // Try to find a good break point (after a property summary)
-    const lines = response.split('\n');
-    let currentChunk = '';
-    let breakPoint = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (currentChunk.length + line.length + 1 > maxLength) {
-        break;
-      }
-      currentChunk += (currentChunk ? '\n' : '') + line;
-      breakPoint = i;
-    }
-
-    // Add indication that there's more
-    currentChunk += '\n\n📨 *Message continues...*\nDue to length limits, this summary shows the first properties. All properties have been processed and saved to the database.';
-
-    return this.formatRichMessage(currentChunk);
-  }
-
-  /**
-   * Normalize location name for consistent storage
-   * @param {string} name - Location name
-   * @returns {string} - Normalized name
-   */
-  normalizeLocationName(name) {
-    if (!name) return '';
-    return name.toString().trim()
-      .split(' ')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
   }
 
   /**
@@ -632,6 +390,124 @@ class PropertyParsingService {
       console.error(`[APARTMENT_TYPE_CREATE] Error with apartment type ${normalizedName}:`, error);
       throw new Error(`Failed to find or create apartment type: ${error.message}`);
     }
+  }
+
+  /**
+   * Format response for property addition results
+   * @param {Array} results - Array of addition results
+   * @returns {string} - Formatted response with rich text
+   */
+  formatPropertyAdditionResponse(results) {
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.length - successCount;
+
+    let response = `🏠 **Property Addition Results**\n\n`;
+
+    if (successCount > 0) {
+      response += `✅ **Successfully added ${successCount} propert${successCount === 1 ? 'y' : 'ies'}:**\n\n`;
+      
+      results.filter(r => r.success).forEach((result, index) => {
+        const property = result.property;
+        response += `${index + 1}. 🏢 ${property.address}\n`;
+        response += `   💰 €${property.price}\n`; // Default to EUR since currency is in remarks
+        response += `   🛏️ ${property.bedrooms || 0} bed${(property.bedrooms || 0) !== 1 ? 's' : ''} • 🛁 ${property.bathrooms || 0} bath${(property.bathrooms || 0) !== 1 ? 's' : ''}\n`;
+        if (property.area) {
+          response += `   📐 ${property.area}m²\n`;
+        }
+        if (property.property_link) {
+          response += `   🔗 ${property.property_link}\n`;
+        }
+        response += `   🆔 Database ID: ${property.id}\n\n`;
+      });
+    }
+
+    if (failureCount > 0) {
+      response += `❌ **Failed to add ${failureCount} propert${failureCount === 1 ? 'y' : 'ies'}:**\n\n`;
+      
+      results.filter(r => !r.success).forEach((result, index) => {
+        response += `${index + 1}. Property ${result.propertyIndex || 'Unknown'}\n`;
+        response += `   Error: ${result.error}\n\n`;
+      });
+    }
+
+    response += `📊 **Summary:** ${successCount} added, ${failureCount} failed out of ${results.length} total properties\n\n`;
+    response += `💡 Use "search properties" to view your listings or "my properties" to manage them.`;
+
+    return this.formatRichMessage(response);
+  }
+
+  /**
+   * Format contact information for storage in remarks field
+   * @param {object} propertyData - Property data with contact info
+   * @returns {string} - Formatted contact information
+   */
+  formatContactInfo(propertyData) {
+    let contactInfo = '';
+    
+    if (propertyData.contact_name || propertyData.contact_phone) {
+      contactInfo += 'Contact Information:\n';
+      if (propertyData.contact_name) {
+        contactInfo += `Name: ${propertyData.contact_name}\n`;
+      }
+      if (propertyData.contact_phone) {
+        contactInfo += `Phone: ${propertyData.contact_phone}\n`;
+      }
+    }
+    
+    if (propertyData.currency && propertyData.currency !== 'EUR') {
+      contactInfo += `Currency: ${propertyData.currency}\n`;
+    }
+    
+    if (propertyData.listing_type && propertyData.listing_type !== 'rent') {
+      contactInfo += `Listing Type: ${propertyData.listing_type}\n`;
+    }
+    
+    return contactInfo.trim();
+  }
+
+  /**
+   * Chunk long response into multiple messages for WhatsApp
+   * @param {string} response - Long response message
+   * @returns {string} - First chunk with indication of more messages
+   */
+  chunkLongResponse(response) {
+    const maxLength = 1500; // Leave some buffer
+    
+    if (response.length <= maxLength) {
+      return response;
+    }
+
+    // Try to find a good break point (after a property summary)
+    const lines = response.split('\n');
+    let currentChunk = '';
+    let breakPoint = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (currentChunk.length + line.length + 1 > maxLength) {
+        break;
+      }
+      currentChunk += (currentChunk ? '\n' : '') + line;
+      breakPoint = i;
+    }
+
+    // Add indication that there's more
+    currentChunk += '\n\n📨 *Message continues...*\nDue to length limits, this summary shows the first properties. All properties have been processed and saved to the database.';
+
+    return this.formatRichMessage(currentChunk);
+  }
+
+  /**
+   * Normalize location name for consistent storage
+   * @param {string} name - Location name
+   * @returns {string} - Normalized name
+   */
+  normalizeLocationName(name) {
+    if (!name) return '';
+    return name.toString().trim()
+      .split(' ')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join(' ');
   }
 
   /**

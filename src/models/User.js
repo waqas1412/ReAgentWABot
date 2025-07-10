@@ -159,8 +159,8 @@ class User extends BaseModel {
    * @returns {Object|null} - Updated user with role
    */
   async updateRole(userId, newRole) {
-    // Use the single source of truth for validation from UserRole model
-    if (!UserRole.isValidRole(newRole)) {
+    const validRoles = ['renter', 'agent', 'owner'];
+    if (!validRoles.includes(newRole)) {
       throw new Error(`Invalid role: ${newRole}`);
     }
 
@@ -240,22 +240,17 @@ class User extends BaseModel {
     const existingUser = await this.getUserByPhoneWithRole(phoneNumber);
     
     if (existingUser) {
-      return { ...existingUser, isNew: false };
+      return existingUser;
     }
 
-    // Create new user without a default role
-    const { name } = defaultData;
-    const cleanNumber = phoneNumber.replace('whatsapp:', '');
+    // Create new user with default role as 'renter'
+    const userData = {
+      phone_number: phoneNumber,
+      name: defaultData.name || null,
+      role: defaultData.role || 'renter'
+    };
 
-    // Create user with null role_id so the conversation service triggers onboarding
-    const newUser = await this.create({
-      phone_number: cleanNumber,
-      name: name || null,
-      role_id: null
-    });
-    
-    // Return user with isNew flag so the system knows to onboard them
-    return { ...newUser, isNew: true, user_roles: null };
+    return await this.createUserWithRole(userData);
   }
 
   /**

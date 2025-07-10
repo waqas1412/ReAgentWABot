@@ -143,29 +143,67 @@ class ViewingAppointment extends BaseModel {
       throw new Error('Missing required fields for appointment creation.');
     }
 
-    // Availability should be checked in the service layer before calling this function.
+    // Use admin database to bypass RLS policies for appointment creation
+    const originalDb = this.db;
+    this.useAdminDb();
 
-    // Check if user already has an appointment for this property at this time
-    const { data: existingAppointment, error: findError } = await this.db
-      .from('viewing_appointments')
-      .select('id')
-      .eq('user_id', user_id)
-      .eq('property_id', property_id)
-      .eq('appointment_date', appointment_date)
-      .lt('start_time', end_time)
-      .gt('end_time', start_time)
-      .single();
+    try {
+      // Check if user already has an appointment for this property at this time
+      const { data: existingAppointment, error: findError } = await this.db
+        .from('viewing_appointments')
+        .select('id')
+        .eq('user_id', user_id)
+        .eq('property_id', property_id)
+        .eq('appointment_date', appointment_date)
+        .lt('start_time', end_time)
+        .gt('end_time', start_time)
+        .single();
 
-    if (findError && findError.code !== 'PGRST116') { // Ignore "No rows found"
-      throw findError;
+      if (findError && findError.code !== 'PGRST116') { // Ignore "No rows found"
+        throw findError;
+      }
+
+      if (existingAppointment) {
+        throw new Error('User already has an overlapping appointment for this property.');
+      }
+
+      // Create the appointment using admin privileges
+      const appointment = await this.create(appointmentData);
+      
+      // Get appointment details using admin privileges as well
+      const { data: appointmentWithDetails, error: detailsError } = await this.db
+        .from('viewing_appointments')
+        .select(`
+          *,
+          users:user_id (
+            id,
+            name,
+            phone_number,
+            user_roles:role_id (role)
+          ),
+          viewing_time_slots:viewing_time_slot_id (
+            id,
+            start_time,
+            end_time
+          )
+        `)
+        .eq('id', appointment.id)
+        .single();
+      
+      // Restore original database connection
+      this.db = originalDb;
+      
+      if (detailsError && detailsError.code !== 'PGRST116') {
+        throw detailsError;
+      }
+      
+      return appointmentWithDetails || appointment;
+      
+    } catch (error) {
+      // Restore original database connection on error
+      this.db = originalDb;
+      throw error;
     }
-
-    if (existingAppointment) {
-      throw new Error('User already has an overlapping appointment for this property.');
-    }
-
-    const appointment = await this.create(appointmentData);
-    return await this.getAppointmentWithDetails(appointment.id);
   }
 
   /**
