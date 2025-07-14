@@ -24,11 +24,7 @@ class UserRole extends BaseModel {
    * Valid user roles
    */
   static get ROLES() {
-    return {
-      RENTER: 'renter',
-      AGENT: 'agent',
-      OWNER: 'owner'
-    };
+    return ['renter', 'agent', 'owner', 'buyer'];
   }
 
   /**
@@ -81,7 +77,7 @@ class UserRole extends BaseModel {
    * @returns {Array} - Created roles
    */
   async initializeDefaultRoles() {
-    const roles = ['renter', 'agent', 'owner'];
+    const roles = UserRole.ROLES;
     const createdRoles = [];
     
     for (const role of roles) {
@@ -101,10 +97,11 @@ class UserRole extends BaseModel {
    * @param {string} role - Role to validate
    * @returns {boolean} - True if valid
    */
-  isValidRole(role) {
-    const validRoles = ['renter', 'agent', 'owner', 'buyer'];
-    return validRoles.includes(role);
+  static isValidRole(role) {
+    return UserRole.ROLES.includes(role);
   }
 }
 
-module.exports = new UserRole(); 
+module.exports = new UserRole();
+module.exports.ROLES = UserRole.ROLES;
+module.exports.UserRoleClass = UserRole; 

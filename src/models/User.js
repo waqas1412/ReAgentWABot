@@ -1,5 +1,6 @@
 const BaseModel = require('./BaseModel');
 const UserRole = require('./UserRole');
+const { ROLES } = require('./UserRole');
 
 /**
  * User Model
@@ -108,30 +109,24 @@ class User extends BaseModel {
    */
   async createUserWithRole(userData) {
     const { phone_number, name, role } = userData;
-    
-    // Clean phone number
     const cleanNumber = phone_number.replace('whatsapp:', '');
-    
-    // Validate role
-    const validRoles = ['renter', 'agent', 'owner'];
-    if (!validRoles.includes(role)) {
-      throw new Error(`Invalid role: ${role}`);
+    let roleRecord = null;
+    if (role) {
+      if (!ROLES.includes(role)) {
+        throw new Error(`Invalid role: ${role}`);
+      }
+      roleRecord = await UserRole.findByRole(role, true);
+      if (!roleRecord) {
+        throw new Error(`Role not found: ${role}`);
+      }
     }
-
-    // Get or create role (use admin client to bypass RLS)
-    const roleRecord = await UserRole.findByRole(role, true);
-    if (!roleRecord) {
-      throw new Error(`Role not found: ${role}`);
-    }
-
-    // Create user
+    // Always set onboarded: false unless role is provided
     const user = await this.create({
       phone_number: cleanNumber,
       name,
-      role_id: roleRecord.id
+      onboarded: !!role, // If role is provided, mark as onboarded
+      ...(roleRecord ? { role_id: roleRecord.id } : {})
     });
-
-    // Return user with role information
     return await this.getUserWithRole(user.id);
   }
 
@@ -159,17 +154,15 @@ class User extends BaseModel {
    * @returns {Object|null} - Updated user with role
    */
   async updateRole(userId, newRole) {
-    const validRoles = ['renter', 'agent', 'owner'];
-    if (!validRoles.includes(newRole)) {
+    if (!ROLES.includes(newRole)) {
       throw new Error(`Invalid role: ${newRole}`);
     }
-
     const roleRecord = await UserRole.findByRole(newRole, true);
     if (!roleRecord) {
       throw new Error(`Role not found: ${newRole}`);
     }
-
-    await this.updateById(userId, { role_id: roleRecord.id });
+    // Set onboarded: true when role is set
+    await this.updateById(userId, { role_id: roleRecord.id, onboarded: true });
     return await this.getUserWithRole(userId);
   }
 
@@ -238,18 +231,15 @@ class User extends BaseModel {
    */
   async getOrCreateUser(phoneNumber, defaultData = {}) {
     const existingUser = await this.getUserByPhoneWithRole(phoneNumber);
-    
     if (existingUser) {
       return existingUser;
     }
-
-    // Create new user with default role as 'renter'
+    // Create new user without a role unless provided
     const userData = {
       phone_number: phoneNumber,
       name: defaultData.name || null,
-      role: defaultData.role || 'renter'
+      role: defaultData.role || null
     };
-
     return await this.createUserWithRole(userData);
   }
 

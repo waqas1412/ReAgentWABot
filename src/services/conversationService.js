@@ -11,6 +11,8 @@ const UserRole = require('../models/UserRole');
 const Property = require('../models/Property');
 const twilioService = require('./twilioService');
 const ViewingAppointment = require('../models/ViewingAppointment');
+const { ROLES } = require('../models/UserRole');
+const { UserRoleClass } = require('../models/UserRole');
 
 // Add a new constant for conversation states
 const CONVERSATION_STATE = {
@@ -47,7 +49,8 @@ class ConversationService {
     });
 
     const welcomeMessage = "Welcome to ReAgentBot! I'm your intelligent real estate assistant.";
-    const roleQuestion = "To get started, could you let me know your primary goal? Please reply with one of the following roles:\n\n- *Buyer*\n- *Renter*\n- *Owner*\n- *Agent*";
+    const roleList = ROLES.map(r => `- *${displayService.capitalizeFirst(r)}*`).join('\n');
+    const roleQuestion = `To get started, could you let me know your primary goal? Please reply with one of the following roles:\n\n${roleList}`;
 
     return [welcomeMessage, roleQuestion];
   }
@@ -65,7 +68,7 @@ class ConversationService {
         
       // If the user has no role and we are not already asking for it, start the onboarding flow.
       // This is the new, correct entry point for the "Handshake."
-      if (!user.role_id && conversationState.state !== CONVERSATION_STATE.AWAITING_ROLE) {
+      if (!user.onboarded && conversationState.state !== CONVERSATION_STATE.AWAITING_ROLE) {
         return await this.startNewUserOnboarding(user, message);
         }
         
@@ -200,47 +203,55 @@ class ConversationService {
    * @returns {Promise<Array>} - Confirmation and follow-up messages.
    */
   async handleRoleSelection(message, user, conversationState) {
-    const requestedRole = message.trim().toLowerCase();
-    
-    // Normalize roles (e.g., "buy" -> "buyer")
-    const roleMap = {
-      buy: 'buyer',
-      buyer: 'buyer',
-      rent: 'renter',
-      renter: 'renter',
-      sell: 'owner',
-      owner: 'owner',
-      agent: 'agent',
-      manage: 'owner' // Or agent, but owner is safer
-    };
-
-    const role = roleMap[requestedRole];
-
-    if (!role || !UserRole.isValidRole(role)) {
+    const requestedRoleRaw = message.trim().toLowerCase();
+    // Normalize roles using a robust mapping
+    const roleMap = {};
+    for (const role of ROLES) {
+      roleMap[role] = role;
+      if (role === 'renter') {
+        roleMap['rent'] = 'renter';
+      }
+      if (role === 'buyer') {
+        roleMap['buy'] = 'buyer';
+      }
+      if (role === 'owner') {
+        roleMap['sell'] = 'owner';
+        roleMap['manage'] = 'owner';
+      }
+      if (role === 'agent') {
+        roleMap['broker'] = 'agent';
+      }
+    }
+    let role = roleMap[requestedRoleRaw];
+    // Try to match partials (e.g., "i want to buy" -> "buyer")
+    if (!role) {
+      for (const key of Object.keys(roleMap)) {
+        if (requestedRoleRaw.includes(key)) {
+          role = roleMap[key];
+          break;
+        }
+      }
+    }
+    if (!role || !UserRoleClass.isValidRole(role)) {
+      const roleList = ROLES.map(r => `*${displayService.capitalizeFirst(r)}*`).join(', ');
       return [
-        "I'm sorry, I didn't understand that role. Please choose one of the following options: *Buyer, Renter, Owner, Agent*."
+        `I'm sorry, I didn't understand that role. Please choose one of the following options: ${roleList}.`
       ];
     }
-
-    // Update the user's role in the database
-    const updatedUser = await User.updateRole(user.id, role);
+    // Update the user's role in the database and set onboarded: true
+    await User.updateRole(user.id, role);
+    // Fetch fresh user with role info
+    const updatedUser = await User.getUserByPhoneWithRole(user.phone_number);
     console.log(`✅ [CONVERSATION] User ${user.phone_number} role set to: ${role}`);
-
-    // Clear the conversation state now that onboarding is complete
     this.clearConversationState(user.phone_number);
-
     let followUpMessages = [`Great! You're all set up as a ${displayService.capitalizeFirst(role)}. Let's get started.`];
-
-    // Now, process their original message, but only if it wasn't the role selection itself.
     const { initialMessage } = conversationState;
-    if (initialMessage && initialMessage.trim().toLowerCase() !== requestedRole) {
+    if (initialMessage && initialMessage.trim().toLowerCase() !== requestedRoleRaw) {
       console.log(`▶️ [CONVERSATION] Processing initial message for ${user.phone_number}: "${initialMessage}"`);
-      // Add a small delay message to make the transition smoother
       followUpMessages.push("Now, let's see about your first message...");
       const subsequentMessages = await this.processMessage(initialMessage, updatedUser);
       followUpMessages = followUpMessages.concat(subsequentMessages);
     }
-    
     return followUpMessages;
   }
 
